@@ -20,5 +20,6 @@
 @property (nonatomic, strong) SPPasteManager *pasteManager;
 @property (nonatomic, strong) SPCuePlayer *cuePlayer;
 @property (nonatomic, strong) SPStatusBarManager *statusBarManager;
+@property (nonatomic, strong) dispatch_source_t configWatcher;
 
 @end

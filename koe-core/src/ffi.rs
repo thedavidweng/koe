@@ -103,6 +103,18 @@ pub struct SPFeedbackConfig {
     pub error_sound: bool,
 }
 
+/// Hotkey configuration exposed to the Obj-C layer
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SPHotkeyConfig {
+    /// Primary key code (e.g. 63 for Fn, 58 for Left Option)
+    pub key_code: u16,
+    /// Alternative key code (e.g. 179 for Globe key), 0 if none
+    pub alt_key_code: u16,
+    /// Modifier flag to check (e.g. 0x800000 for Fn)
+    pub modifier_flag: u64,
+}
+
 /// Helper to convert a C string pointer to a Rust &str
 ///
 /// # Safety

@@ -15,7 +15,8 @@ use crate::asr::{AsrConfig, AsrEvent, AsrProvider};
 use crate::config::Config;
 use crate::ffi::{
     cstr_to_str, invoke_final_text_ready, invoke_session_error, invoke_session_ready,
-    invoke_state_changed, SPCallbacks, SPFeedbackConfig, SPSessionContext, SPSessionMode,
+    invoke_state_changed, SPCallbacks, SPFeedbackConfig, SPHotkeyConfig, SPSessionContext,
+    SPSessionMode,
 };
 use crate::llm::openai_compatible::OpenAiCompatibleProvider;
 use crate::llm::{CorrectionRequest, LlmProvider};
@@ -301,6 +302,29 @@ pub extern "C" fn sp_core_get_feedback_config() -> SPFeedbackConfig {
             start_sound: true,
             stop_sound: true,
             error_sound: true,
+        }
+    }
+}
+
+/// Query current hotkey configuration.
+/// Returns key codes and modifier flags for the configured trigger key.
+/// If not configured, defaults to Fn key (keyCode 63/179).
+#[no_mangle]
+pub extern "C" fn sp_core_get_hotkey_config() -> SPHotkeyConfig {
+    let global = CORE.lock().unwrap();
+    if let Some(ref core) = *global {
+        let params = core.config.hotkey.resolve();
+        SPHotkeyConfig {
+            key_code: params.key_code,
+            alt_key_code: params.alt_key_code,
+            modifier_flag: params.modifier_flag,
+        }
+    } else {
+        // Default to Fn key
+        SPHotkeyConfig {
+            key_code: 63,
+            alt_key_code: 179,
+            modifier_flag: 0x00800000,
         }
     }
 }

@@ -8,9 +8,12 @@
 #import "SPCuePlayer.h"
 #import "SPStatusBarManager.h"
 #import "SPHistoryManager.h"
+#import "koe_core.h"
+#import <sys/stat.h>
 
 @interface SPAppDelegate ()
 @property (nonatomic, strong) NSDate *recordingStartTime;
+@property (nonatomic, assign) time_t lastConfigModTime;
 @end
 
 @implementation SPAppDelegate
@@ -50,15 +53,92 @@
 
         // Start hotkey monitor (let it try CGEventTap directly — the probe may give false negatives)
         self.hotkeyMonitor = [[SPHotkeyMonitor alloc] initWithDelegate:self];
+
+        // Apply hotkey configuration from config.yaml
+        struct SPHotkeyConfig hotkeyConfig = sp_core_get_hotkey_config();
+        self.hotkeyMonitor.targetKeyCode = hotkeyConfig.key_code;
+        self.hotkeyMonitor.altKeyCode = hotkeyConfig.alt_key_code;
+        self.hotkeyMonitor.targetModifierFlag = hotkeyConfig.modifier_flag;
+
         [self.hotkeyMonitor start];
         NSLog(@"[Koe] Ready — hotkey monitor active");
+
+        // Start watching config file for hotkey changes
+        [self startConfigWatcher];
     }];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     NSLog(@"[Koe] Application terminating...");
+    if (self.configWatcher) {
+        dispatch_source_cancel(self.configWatcher);
+        self.configWatcher = nil;
+    }
     [self.hotkeyMonitor stop];
     [self.rustBridge destroyCore];
+}
+
+#pragma mark - Config File Watcher
+
+- (void)startConfigWatcher {
+    NSString *configPath = [NSHomeDirectory() stringByAppendingPathComponent:@".koe/config.yaml"];
+
+    // Record initial modification time
+    struct stat st;
+    if (stat(configPath.UTF8String, &st) == 0) {
+        self.lastConfigModTime = st.st_mtime;
+    }
+
+    // Check config file modification every 3 seconds
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), 3 * NSEC_PER_SEC, 1 * NSEC_PER_SEC);
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(timer, ^{
+        [weakSelf checkConfigFileChanged];
+    });
+
+    dispatch_resume(timer);
+    self.configWatcher = timer;
+    NSLog(@"[Koe] Config file watcher started (polling every 3s)");
+}
+
+- (void)checkConfigFileChanged {
+    NSString *configPath = [NSHomeDirectory() stringByAppendingPathComponent:@".koe/config.yaml"];
+
+    struct stat st;
+    if (stat(configPath.UTF8String, &st) != 0) return;
+
+    if (st.st_mtime == self.lastConfigModTime) return;
+    self.lastConfigModTime = st.st_mtime;
+
+    NSLog(@"[Koe] Config file changed, reloading hotkey config...");
+
+    // Reload config in Rust core
+    [self.rustBridge reloadConfig];
+
+    // Read new hotkey config
+    struct SPHotkeyConfig newConfig = sp_core_get_hotkey_config();
+
+    // Check if hotkey settings actually changed
+    if (self.hotkeyMonitor.targetKeyCode != newConfig.key_code ||
+        self.hotkeyMonitor.altKeyCode != newConfig.alt_key_code ||
+        self.hotkeyMonitor.targetModifierFlag != newConfig.modifier_flag) {
+
+        NSLog(@"[Koe] Hotkey changed: keyCode %ld→%d altKeyCode %ld→%d modifierFlag 0x%lx→0x%llx",
+              (long)self.hotkeyMonitor.targetKeyCode, newConfig.key_code,
+              (long)self.hotkeyMonitor.altKeyCode, newConfig.alt_key_code,
+              (unsigned long)self.hotkeyMonitor.targetModifierFlag, (unsigned long long)newConfig.modifier_flag);
+
+        // Stop, update, restart
+        [self.hotkeyMonitor stop];
+        self.hotkeyMonitor.targetKeyCode = newConfig.key_code;
+        self.hotkeyMonitor.altKeyCode = newConfig.alt_key_code;
+        self.hotkeyMonitor.targetModifierFlag = newConfig.modifier_flag;
+        [self.hotkeyMonitor start];
+
+        NSLog(@"[Koe] Hotkey monitor restarted with new trigger key");
+    }
 }
 
 #pragma mark - SPHotkeyMonitorDelegate

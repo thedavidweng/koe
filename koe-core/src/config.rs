@@ -13,6 +13,8 @@ pub struct Config {
     pub feedback: FeedbackSection,
     #[serde(default)]
     pub dictionary: DictionarySection,
+    #[serde(default)]
+    pub hotkey: HotkeySection,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -79,6 +81,60 @@ pub struct DictionarySection {
     pub path: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct HotkeySection {
+    /// Trigger key for voice input.
+    /// Options: "fn", "left_option", "right_option", "left_command", "right_command"
+    /// Default: "fn"
+    #[serde(default = "default_trigger_key")]
+    pub trigger_key: String,
+}
+
+/// Resolved hotkey parameters for the native side
+#[derive(Debug, Clone, Copy)]
+pub struct HotkeyParams {
+    /// Primary key code (from Carbon Events)
+    pub key_code: u16,
+    /// Alternative key code (e.g. 179 for Globe key), 0 if none
+    pub alt_key_code: u16,
+    /// Modifier flag to check (e.g. NSEventModifierFlagFunction = 0x800000)
+    pub modifier_flag: u64,
+}
+
+impl HotkeySection {
+    /// Resolve the trigger_key string into concrete key codes and modifier flags.
+    pub fn resolve(&self) -> HotkeyParams {
+        match self.trigger_key.as_str() {
+            "left_option" => HotkeyParams {
+                key_code: 58,       // kVK_Option
+                alt_key_code: 0,
+                modifier_flag: 0x00080000,  // NSEventModifierFlagOption
+            },
+            "right_option" => HotkeyParams {
+                key_code: 61,       // kVK_RightOption
+                alt_key_code: 0,
+                modifier_flag: 0x00080000,  // NSEventModifierFlagOption
+            },
+            "left_command" => HotkeyParams {
+                key_code: 55,       // kVK_Command
+                alt_key_code: 0,
+                modifier_flag: 0x00100000,  // NSEventModifierFlagCommand
+            },
+            "right_command" => HotkeyParams {
+                key_code: 54,       // kVK_RightCommand
+                alt_key_code: 0,
+                modifier_flag: 0x00100000,  // NSEventModifierFlagCommand
+            },
+            // "fn" or anything else defaults to Fn/Globe
+            _ => HotkeyParams {
+                key_code: 63,       // kVK_Function (Fn)
+                alt_key_code: 179,  // Globe key on newer keyboards
+                modifier_flag: 0x00800000,  // NSEventModifierFlagFunction
+            },
+        }
+    }
+}
+
 // ─── Defaults ───────────────────────────────────────────────────────
 
 fn default_asr_url() -> String {
@@ -114,6 +170,9 @@ fn default_dictionary_path() -> String {
 fn default_system_prompt_path() -> String {
     "system_prompt.txt".into()
 }
+fn default_trigger_key() -> String {
+    "fn".into()
+}
 fn default_user_prompt_path() -> String {
     "user_prompt.txt".into()
 }
@@ -139,6 +198,11 @@ impl Default for FeedbackSection {
     }
 }
 impl Default for DictionarySection {
+    fn default() -> Self {
+        serde_yaml::from_str("{}").unwrap()
+    }
+}
+impl Default for HotkeySection {
     fn default() -> Self {
         serde_yaml::from_str("{}").unwrap()
     }
@@ -301,6 +365,10 @@ feedback:
 
 dictionary:
   path: "dictionary.txt"  # relative to ~/.koe/
+
+hotkey:
+  # 触发键：fn | left_option | right_option | left_command | right_command
+  trigger_key: "fn"
 "#;
 
 const DEFAULT_DICTIONARY_TXT: &str = r#"# Koe User Dictionary
@@ -323,7 +391,7 @@ Rules:
    - Acronyms: URL, URI, CDN, VPN, LLM, ASR, TTS, OCR, NLP, AI, ML, GPU, CPU, RAM, SSD, IP, OAuth, JWT, CORS
    - Always capitalize the first letter of sentences.
 4. Spacing: insert a half-width space between Chinese and English/numbers (e.g. \"使用Python\" -> \"使用 Python\", \"有3个\" -> \"有 3 个\"). No space between English words and Chinese punctuation.
-5. Punctuation: use Chinese punctuation in Chinese context (，。！？：；) and English punctuation in English context. Do not mix. Use \"……\" instead of \"...\". Chinese sentences must end with punctuation.
+5. Punctuation: do NOT add new punctuation that was not in the ASR output. Only fix the type of existing punctuation marks — use Chinese punctuation in Chinese context (，。！？：；) and English punctuation in English context. Use \"……\" instead of \"...\". Do not insert extra commas or periods.
 6. Prefer terms, proper nouns, and spellings from the user dictionary when provided. The dictionary takes highest priority.
 7. Use the ASR interim revision history to identify uncertain words. Words that changed across revisions are likely misrecognized — pay extra attention to correcting them.
 8. Remove filler words that carry no semantic meaning, such as 嗯, 啊, 哦, 呃, 这个, 那个, 就是, well, like, you know, um, uh, so basically.

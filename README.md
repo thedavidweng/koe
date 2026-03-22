@@ -15,7 +15,7 @@ Koe takes a different approach:
 - **No GUI at all.** The only visual element is a tiny icon in the menu bar.
 - **All configuration lives in plain text files** under `~/.koe/`. Edit them with any text editor, vim, or even a script.
 - **Dictionary is a plain `.txt` file.** No need to open an app and add words one by one through a GUI. Just edit `~/.koe/dictionary.txt` — one term per line. You can even use Claude Code or other AI tools to bulk-generate domain-specific terms.
-- **Changes take effect immediately.** Edit any config file and the next time you press the hotkey, the new settings are used. No restart, no reload button.
+- **Changes take effect immediately.** Edit any config file and the new settings are used automatically. ASR, LLM, dictionary, and prompt changes apply on the next hotkey press. Hotkey changes are detected within a few seconds. No restart, no reload button.
 - **Tiny footprint.** Even after installation, Koe stays **under 15 MB**, and its memory usage is typically **around 20 MB**. It launches fast, wastes almost no disk space, and stays out of your way.
 - **Built with native macOS technologies.** Objective-C handles hotkeys, audio capture, clipboard access, permissions, and paste automation directly through Apple's own APIs.
 - **Rust does the heavy lifting.** The performance-critical core runs in Rust, which gives Koe low overhead, fast execution, and strong memory safety guarantees.
@@ -23,7 +23,7 @@ Koe takes a different approach:
 
 ## How It Works
 
-1. Press and hold **Fn** (or tap to toggle) — Koe starts listening
+1. Press and hold the trigger key (default: **Fn**, configurable) — Koe starts listening
 2. Audio streams in real-time to a cloud ASR service (Doubao/豆包 by ByteDance)
 3. The ASR transcript is corrected by an LLM (any OpenAI-compatible API) — fixing capitalization, punctuation, spacing, and terminology
 4. The corrected text is automatically pasted into the active input field
@@ -96,7 +96,7 @@ Koe requires **three macOS permissions** to function. You'll be prompted to gran
 |---|---|---|
 | **Microphone** | Captures audio from your mic and streams it to the ASR service for speech recognition. | Koe cannot hear you at all. Recording will not start. |
 | **Accessibility** | Simulates a `Cmd+V` keystroke to paste the corrected text into the active input field of any app. | Koe will still copy the text to your clipboard, but cannot auto-paste. You'll need to paste manually. |
-| **Input Monitoring** | Listens for the **Fn** key globally so Koe can detect when you press/release it, regardless of which app is in the foreground. | Koe cannot detect the hotkey. You won't be able to trigger recording. |
+| **Input Monitoring** | Listens for the trigger key (default: **Fn**, configurable) globally so Koe can detect when you press/release it, regardless of which app is in the foreground. | Koe cannot detect the hotkey. You won't be able to trigger recording. |
 
 To grant permissions: **System Settings → Privacy & Security** → enable Koe under each of the three categories above.
 
@@ -220,6 +220,25 @@ feedback:
   error_sound: true    # Play sound on errors
 ```
 
+#### Hotkey
+
+```yaml
+hotkey:
+  # Trigger key for voice input.
+  # Options: fn | left_option | right_option | left_command | right_command
+  trigger_key: "fn"
+```
+
+| Option | Key | Notes |
+|---|---|---|
+| `fn` | Fn/Globe key | Default. Works on all Mac keyboards |
+| `left_option` | Left Option | Good alternative if Fn is remapped |
+| `right_option` | Right Option | Least likely to conflict with shortcuts |
+| `left_command` | Left Command | May conflict with system shortcuts |
+| `right_command` | Right Command | Less conflict-prone than left Command |
+
+Hotkey changes take effect automatically within a few seconds — no restart needed.
+
 #### Dictionary
 
 ```yaml
@@ -315,6 +334,30 @@ sqlite3 ~/.koe/history.db "SELECT date(timestamp, 'unixepoch', 'localtime') as d
 ```
 
 You can also build your own dashboard or visualization on top of this database — it's just a standard SQLite file.
+
+## AI-Assisted Setup
+
+Koe provides a skill that works with any AI coding agent (Claude Code, Codex, etc.) to guide you through the entire setup process interactively.
+
+### Install the Skill
+
+```bash
+npx skills add missuo/koe
+```
+
+The command will let you choose which AI coding tool to install the skill for.
+
+### What It Does
+
+Once installed, the `koe-setup` skill will:
+
+1. Check your installation and permissions
+2. Walk you through ASR and LLM credential setup
+3. Ask about your profession and generate a **personalized dictionary** tailored to your domain
+4. Customize the **system prompt** based on your use case
+5. Help you configure the trigger key and sound feedback
+
+This is especially useful for first-time users who want a guided, interactive setup experience.
 
 ## Architecture
 

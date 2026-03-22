@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, SPHotkeyState) {
 @property (nonatomic, strong) id localMonitorRef;
 
 - (void)handleFlagsChangedEvent:(CGEventRef)event;
+- (BOOL)isTargetKeyCode:(NSInteger)keyCode;
 
 @end
 
@@ -44,8 +45,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         [monitor handleFlagsChangedEvent:event];
     } else if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
         NSInteger keyCode = (NSInteger)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-        // Log Fn/Globe key events (keyCode 63 or 179)
-        if (keyCode == 63 || keyCode == 179) {
+        if ([monitor isTargetKeyCode:keyCode]) {
             CGEventFlags flags = CGEventGetFlags(event);
             NSLog(@"[Koe] Key event: type=%d keyCode=%ld flags=0x%llx",
                   type, (long)keyCode, (unsigned long long)flags);
@@ -64,6 +64,9 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         _holdThresholdMs = 180.0;
         _state = SPHotkeyStateIdle;
         _fnDown = NO;
+        _targetKeyCode = 63;       // kVK_Function (Fn)
+        _altKeyCode = 179;         // Globe key on newer keyboards
+        _targetModifierFlag = 0x800000; // NSEventModifierFlagFunction
     }
     return self;
 }
@@ -87,7 +90,8 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         return event;
     }];
 
-    NSLog(@"[Koe] Hotkey monitor started via NSEvent monitors (threshold=%.0fms)", self.holdThresholdMs);
+    NSLog(@"[Koe] Hotkey monitor started via NSEvent monitors (keyCode=%ld altKeyCode=%ld modifierFlag=0x%lx threshold=%.0fms)",
+          (long)self.targetKeyCode, (long)self.altKeyCode, (unsigned long)self.targetModifierFlag, self.holdThresholdMs);
 
     // Also try CGEventTap as additional source
     CGEventMask mask = CGEventMaskBit(kCGEventFlagsChanged)
@@ -109,18 +113,21 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
     }
 }
 
+- (BOOL)isTargetKeyCode:(NSInteger)keyCode {
+    return keyCode == self.targetKeyCode || (self.altKeyCode != 0 && keyCode == self.altKeyCode);
+}
+
 - (void)handleNSEvent:(NSEvent *)event {
     if (event.type == NSEventTypeFlagsChanged) {
         NSUInteger flags = event.modifierFlags;
         NSInteger keyCode = event.keyCode;
         NSLog(@"[Koe] NSEvent FlagsChanged: keyCode=%ld flags=0x%lx", (long)keyCode, (unsigned long)flags);
 
-        // Fn/Globe key = keyCode 63
-        if (keyCode == 63) {
-            BOOL fnNow = (flags & NSEventModifierFlagFunction) != 0;
-            if (fnNow != self.fnDown) {
-                self.fnDown = fnNow;
-                if (fnNow) {
+        if ([self isTargetKeyCode:keyCode]) {
+            BOOL keyNow = (flags & self.targetModifierFlag) != 0;
+            if (keyNow != self.fnDown) {
+                self.fnDown = keyNow;
+                if (keyNow) {
                     [self handleFnDown];
                 } else {
                     [self handleFnUp];
@@ -128,9 +135,9 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
             }
         }
     } else if (event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp) {
-        // Some macOS versions send Fn as keyDown/keyUp with keyCode 63 or 179
+        // Some macOS versions send modifier keys as keyDown/keyUp events
         NSInteger keyCode = event.keyCode;
-        if (keyCode == 63 || keyCode == 179) {
+        if ([self isTargetKeyCode:keyCode]) {
             BOOL isDown = (event.type == NSEventTypeKeyDown);
             NSLog(@"[Koe] NSEvent Key%@: keyCode=%ld", isDown ? @"Down" : @"Up", (long)keyCode);
             if (isDown != self.fnDown) {
@@ -177,15 +184,13 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
     // Log every flags-changed event for debugging
     NSLog(@"[Koe] FlagsChanged: keyCode=%ld flags=0x%llx", (long)keyCode, (unsigned long long)flags);
 
-    // Fn/Globe key detection:
-    // 1. Check modifier flag bit 0x800000 (NSEventModifierFlagFunction)
-    // 2. Also check keyCode 63 (kVK_Function) which is the Fn/Globe key
+    // Target key detection:
+    // 1. Check if keyCode matches the configured trigger key
+    // 2. Check modifier flag bit for key state
     BOOL fnNow;
-    if (keyCode == 63) {
-        // Fn/Globe key pressed or released — toggle based on flag bit
-        fnNow = (flags & 0x800000) != 0;
+    if ([self isTargetKeyCode:keyCode]) {
+        fnNow = (flags & self.targetModifierFlag) != 0;
     } else {
-        // Other modifier key — ignore for Fn detection
         return;
     }
 
