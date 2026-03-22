@@ -9,6 +9,7 @@
 @class SPCuePlayer;
 @class SPStatusBarManager;
 @class SPHistoryManager;
+@class SPOverlayPanel;
 
 @interface SPAppDelegate : NSObject <NSApplicationDelegate>
 
@@ -20,6 +21,7 @@
 @property (nonatomic, strong) SPPasteManager *pasteManager;
 @property (nonatomic, strong) SPCuePlayer *cuePlayer;
 @property (nonatomic, strong) SPStatusBarManager *statusBarManager;
+@property (nonatomic, strong) SPOverlayPanel *overlayPanel;
 @property (nonatomic, strong) dispatch_source_t configWatcher;
 
 @end

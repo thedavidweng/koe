@@ -7,6 +7,7 @@
 #import "SPPasteManager.h"
 #import "SPCuePlayer.h"
 #import "SPStatusBarManager.h"
+#import "SPOverlayPanel.h"
 #import "SPHistoryManager.h"
 #import "koe_core.h"
 #import <sys/stat.h>
@@ -35,6 +36,9 @@
     // Initialize status bar
     self.statusBarManager = [[SPStatusBarManager alloc] initWithDelegate:self
                                                        permissionManager:self.permissionManager];
+
+    // Initialize floating overlay
+    self.overlayPanel = [[SPOverlayPanel alloc] init];
 
     // Check permissions
     [self.permissionManager checkAllPermissionsWithCompletion:^(BOOL micGranted, BOOL accessibilityGranted, BOOL inputMonitoringGranted) {
@@ -149,6 +153,7 @@
     [self.cuePlayer reloadFeedbackConfig];
     [self.cuePlayer playStart];
     [self.statusBarManager updateState:@"recording"];
+    [self.overlayPanel updateState:@"recording"];
 
     // Start audio capture + Rust session
     [self.rustBridge beginSessionWithMode:SPSessionModeHold];
@@ -176,6 +181,7 @@
     [self.cuePlayer reloadFeedbackConfig];
     [self.cuePlayer playStart];
     [self.statusBarManager updateState:@"recording"];
+    [self.overlayPanel updateState:@"recording"];
 
     [self.rustBridge beginSessionWithMode:SPSessionModeToggle];
     [self.audioCaptureManager startCaptureWithAudioCallback:^(const void *buffer, uint32_t length, uint64_t timestamp) {
@@ -214,6 +220,7 @@
     [[SPHistoryManager sharedManager] recordSessionWithDurationMs:durationMs text:text];
 
     [self.statusBarManager updateState:@"pasting"];
+    [self.overlayPanel updateState:@"pasting"];
 
     // Backup clipboard, write text, paste, restore
     [self.clipboardManager backup];
@@ -224,10 +231,12 @@
         [self.pasteManager simulatePasteWithCompletion:^{
             [self.clipboardManager scheduleRestoreAfterDelay:1500];
             [self.statusBarManager updateState:@"idle"];
+            [self.overlayPanel updateState:@"idle"];
         }];
     } else {
         NSLog(@"[Koe] Accessibility not granted — text copied to clipboard only");
         [self.statusBarManager updateState:@"idle"];
+        [self.overlayPanel updateState:@"idle"];
     }
 }
 
@@ -236,16 +245,19 @@
     [self.cuePlayer playError];
     [self.audioCaptureManager stopCapture];
     [self.statusBarManager updateState:@"error"];
+    [self.overlayPanel updateState:@"error"];
 
     // Brief error display, then back to idle
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [self.statusBarManager updateState:@"idle"];
+        [self.overlayPanel updateState:@"idle"];
     });
 }
 
 - (void)rustBridgeDidChangeState:(NSString *)state {
     [self.statusBarManager updateState:state];
+    [self.overlayPanel updateState:state];
 }
 
 @end
