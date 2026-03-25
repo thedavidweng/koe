@@ -30,6 +30,7 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/../target/aarch64-apple-darwin/release"
+          - "$(SRCROOT)/../target/x86_64-apple-darwin/release"
           - "$(SRCROOT)/../target/release"
         OTHER_LDFLAGS:
           - "-lkoe_core"
@@ -44,8 +45,14 @@ targets:
     preBuildScripts:
       - name: Build Rust Library
         script: |
+          export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           cd "${SRCROOT}/.."
-          cargo build --manifest-path koe-core/Cargo.toml --release --target aarch64-apple-darwin
+          if [ "$ARCHS" = "x86_64" ]; then
+            RUST_TARGET="x86_64-apple-darwin"
+          else
+            RUST_TARGET="aarch64-apple-darwin"
+          fi
+          cargo build --manifest-path koe-core/Cargo.toml --release --target "$RUST_TARGET"
         basedOnDependencyAnalysis: false
     frameworks:
       - AVFoundation
