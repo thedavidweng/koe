@@ -2,7 +2,7 @@
 
 ## 1. Document Objective
 
-This document defines the complete design of a voice input tool that runs on macOS with no visible GUI. The tool's goals are:
+This document defines the complete design of a voice input tool that runs on macOS as a background-first app with no persistent main window. The tool's goals are:
 
 - The user focuses the cursor in any app's input field.
 - The user holds down a designated hotkey to start speaking, and releases the hotkey to end the current input.
@@ -24,19 +24,20 @@ This document is not a requirements sketch but an implementation design document
 
 ## 2. Core Conclusions
 
-### 2.1 It Is Possible to Have "No Visible GUI"
+### 2.1 It Is Possible to Have a Background-First UI
 
-Yes. The product should be built as a macOS Agent App with no windows, no Dock icon, and no settings page.
+Yes. The product should be built as a macOS Agent App with no Dock icon and no always-open main window.
 
 Recommended form:
 
 - `LSUIElement=1`
-- No main window
-- No menu bar UI dependency
-- All configuration maintained through local files
-- Menu bar status icon with dropdown showing permission status and usage statistics
+- No main window at launch
+- Menu bar status UI is part of the product
+- Optional lightweight settings window opened from the menu bar
+- All configuration maintained through local files under `~/.koe/`
+- Floating overlay only during active sessions
 
-From the user's perspective, this is equivalent to "no GUI" — there are no windows, just a small status icon.
+From the user's perspective, this still behaves like a background utility rather than a normal docked application.
 
 ### 2.2 Not Recommended as a Bare Binary
 
@@ -71,7 +72,7 @@ Reasons:
 
 ### 3.1 Goals
 
-- Minimal visible GUI (menu bar icon and floating status overlay only)
+- Minimal visible GUI (menu bar icon, floating status overlay, and an optional settings window only when needed)
 - Support hold-to-talk, release-to-end
 - Support tap-to-start, tap-again-to-end
 - Support streaming WebSocket speech recognition
@@ -83,7 +84,7 @@ Reasons:
 
 ### 3.2 Non-Goals
 
-- No full settings panel
+- No dock-based main application shell
 - No recording file management interface
 - No multi-turn conversational voice assistant
 - No voice wake word
@@ -100,17 +101,18 @@ Runtime behavior:
 - The user places the `.app` in `/Applications`
 - After first launch, the application runs persistently in the background
 - No Dock icon is displayed
-- No main window is created
-- The user is not required to open any interface
+- No main window is created at launch
+- The user is not required to open any interface, though a settings window is available from the menu bar when needed
 
 ### 4.2 Menu Bar UI
 
 Instead of a CLI tool, the app provides a menu bar dropdown with:
 
+- **Status section**: current status, version/build when idle, and the resolved trigger/cancel hotkeys
 - **Statistics section**: total characters, words, recording time, session count, and input speed
-- **Permissions section**: shows granted/missing status for Microphone, Accessibility, and Input Monitoring
+- **Permissions section**: shows granted/missing status for Microphone, Accessibility, Input Monitoring, and Notifications
 - **Microphone section**: a submenu listing all available audio input devices; "System Default" is always present as the first option; the currently selected device is indicated with a checkmark; selection persists across app restarts via `NSUserDefaults`
-- **Quit option**
+- **Utility actions**: `Setup Wizard...`, `Open Config Folder...`, `Check for Updates...`, `Launch at Login`, and `Quit Koe`
 
 Section headers use custom `NSView` with bold labels (not selectable, not grayed out). The idle icon is a 5-bar audio waveform for easy recognition.
 
@@ -120,7 +122,7 @@ A borderless, non-activating `NSPanel` positioned at the bottom-center of the sc
 
 The overlay displays the current session state:
 
-- **Recording**: animated waveform icon with real-time interim ASR text (falls back to "Listening…" before the first interim result arrives). The pill expands horizontally as text grows but never shrinks within a session, up to the screen width minus margins. When text overflows, only the trailing portion is shown with a left-edge gradient fade.
+- **Recording**: animated waveform icon with real-time interim ASR text (falls back to "Listening…" before the first interim result arrives). The pill expands horizontally as text grows but never shrinks within a session, up to the screen width minus margins. Interim text auto-wraps and the layout avoids visible jitter while the transcript stabilizes. When text overflows, only the trailing portion is shown with a left-edge gradient fade.
 - **Connecting / Recognizing / Thinking**: pulsing dots with a status label
 - **Pasting**: animated checkmark
 - **Error**: cross mark
@@ -351,17 +353,18 @@ Default support:
 
 Required fallbacks:
 
+- `left_option`
 - `right_option`
+- `left_command`
 - `right_command`
-- `caps_lock`
-- Key combinations, such as `right_option` + `space`
 
 Configuration requirements:
 
 - The hotkey must be configurable
 - The default value can be `fn`
+- The cancel key must be configurable and separate from the trigger key
 - Must support having both "hold mode" and "tap toggle mode" enabled simultaneously
-- Must support configurable decision thresholds
+- The decision threshold can remain fixed at 180ms
 - Documentation and diagnostic tools must indicate: if `Fn` is intercepted by the system, the user should switch to a fallback key
 
 ### 7.7 Limitations That Must Be Clearly Stated in User Documentation
@@ -382,7 +385,7 @@ Then this application may not be able to reliably receive press and release even
 1. The user installs `Koe.app`
 2. The user launches the application for the first time
 3. The application checks whether the configuration file exists
-4. If it does not exist, it generates a default configuration file and default dictionary file under `Application Support`
+4. If it does not exist, it generates a default configuration file and default dictionary file under `~/.koe/`
 5. The application checks microphone permission, Input Monitoring permission, and Accessibility permission
 6. If permissions are missing, then:
    - Microphone: trigger system microphone authorization
@@ -474,7 +477,7 @@ Since there are no windows, the application still needs minimal feedback. Recomm
 - Recognition failure: error sound
 - Missing permission: error sound plus log entry
 
-Cue sounds can be configured off, but it is recommended to enable them by default; otherwise, the user cannot tell whether recording has actually started.
+Cue sounds can be enabled by users who want stronger feedback, but the shipped defaults can stay off to keep the runtime quiet.
 
 ## 10. Overall Architecture
 
@@ -705,19 +708,24 @@ Conclusion:
 
 ```yaml
 asr:
+  # ASR provider selection. Currently only "doubao" is implemented.
+  provider: "doubao"
+
   # Doubao ASR 2.0 (优化版双向流式)
-  url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
-  app_key: ""              # Volcengine App ID
-  access_key: ""           # Volcengine Access Token
-  resource_id: "volc.seedasr.sauc.duration"
-  connect_timeout_ms: 3000
-  final_wait_timeout_ms: 5000
-  enable_ddc: true         # 语义顺滑 (disfluency removal)
-  enable_itn: true         # 文本规范化 (inverse text normalization)
-  enable_punc: true        # 自动标点
-  enable_nonstream: true   # 二遍识别 (two-pass: streaming + re-recognition)
+  doubao:
+    url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+    app_key: ""              # Volcengine App ID
+    access_key: ""           # Volcengine Access Token
+    resource_id: "volc.seedasr.sauc.duration"
+    connect_timeout_ms: 3000
+    final_wait_timeout_ms: 5000
+    enable_ddc: true         # 语义顺滑 (disfluency removal)
+    enable_itn: true         # 文本规范化 (inverse text normalization)
+    enable_punc: true        # 自动标点
+    enable_nonstream: true   # 二遍识别 (two-pass: streaming + re-recognition)
 
 llm:
+  enabled: true
   base_url: ""             # OpenAI-compatible endpoint
   api_key: "${LLM_API_KEY}"
   model: ""
@@ -725,20 +733,25 @@ llm:
   top_p: 1
   timeout_ms: 8000
   max_output_tokens: 1024
+  max_token_parameter: "max_completion_tokens"
   dictionary_max_candidates: 0  # 0 = send all entries to LLM
   system_prompt_path: "system_prompt.txt"
   user_prompt_path: "user_prompt.txt"
 
 feedback:
-  start_sound: true
-  stop_sound: true
-  error_sound: true
+  start_sound: false
+  stop_sound: false
+  error_sound: false
 
 dictionary:
   path: "dictionary.txt"
+
+hotkey:
+  trigger_key: "fn"
+  cancel_key: "left_option"
 ```
 
-> **Note:** Hotkey (Fn, 180ms threshold), audio (16kHz, 200ms frames), and paste (clipboard restore after 1500ms) parameters are hardcoded and not user-configurable.
+> **Note:** The tap/hold threshold (180ms), audio framing, and paste timing are still hardcoded. Hotkeys, provider credentials, and cue sounds are user-configurable.
 
 ### 14.2 Configuration Rules
 
@@ -750,12 +763,23 @@ dictionary:
 
 ### 14.3 Hotkey Behavior
 
-The hotkey is hardcoded to the **Fn** key with a **180ms** threshold for distinguishing tap from hold. Both modes are always enabled:
+The hotkey layer now exposes both a configurable `trigger_key` and a separate
+`cancel_key`. Supported values are:
 
-- **Hold to talk:** hold Fn to start, release to end
-- **Tap to toggle:** tap Fn to start, tap again to end
+- `fn`
+- `left_option`
+- `right_option`
+- `left_command`
+- `right_command`
 
-The tap/hold boundary is fixed at a single 180ms threshold. When the system is already in hands-free recording (tap mode), the next Fn keyDown immediately ends the session without waiting for key release.
+Behavior:
+
+- `trigger_key` supports both **hold to talk** and **tap to toggle**
+- `cancel_key` aborts the current session immediately without producing output
+- The tap/hold boundary remains fixed at **180ms**
+- If the configured trigger and cancel keys collide, the config loader normalizes them and persists a valid pair back to `config.yaml`
+
+When the system is already in hands-free recording (tap mode), the next trigger `keyDown` immediately ends the session without waiting for key release.
 
 ## 15. `dictionary.txt` Design
 
@@ -1499,14 +1523,9 @@ Rust core uses `env_logger` which outputs to stderr. To view logs, run the app f
 
 ### 26.1 Launch at Login
 
-Support for launch at login is recommended.
+Support for launch at login is recommended and is implemented with `SMAppService`.
 
-Implementation options:
-
-- `SMAppService`
-- `LaunchAgent`
-
-If completely UI-free and higher controllability is required, `LaunchAgent` is more straightforward.
+`LaunchAgent` is not required for the current product shape.
 
 ### 26.2 Persistent Residence Strategy
 
@@ -1552,12 +1571,12 @@ Goal:
 - Input field verification
 - Failure degradation
 
-### 27.4 Phase 4: Build Provider Abstractions
+### 27.4 Phase 4: Expand Provider Support
 
 Goal:
 
-- ASR provider abstraction
-- LLM provider abstraction
+- Additional ASR providers on top of the existing abstraction
+- Additional LLM backends where needed
 
 ## 28. Test Plan
 
@@ -1610,13 +1629,14 @@ Test scenarios include:
 The final recommended implementation approach is as follows:
 
 - Form: windowless macOS Agent App
+- Runtime UI: menu bar item, floating overlay, optional settings window
 - Shell language: Objective-C
 - Core language: Rust
 - Configuration file: `config.yaml`
 - User dictionary: `dictionary.txt`
-- Hotkey mode: default `Fn`, same key supports both hold mode and tap toggle mode, with required fallback keys
+- Hotkey mode: default `Fn` trigger plus `left_option` cancel, configurable with supported fallback keys
 - Recording strategy: hold to record and release to end, or tap to start and tap again to end
-- ASR: WebSocket streaming recognition
+- ASR: provider-based config, currently backed by Doubao WebSocket streaming recognition
 - Correction: LLM minimal necessary correction
 - Filler words: removed by LLM in context
 - Input injection: clipboard + `Cmd+V`
@@ -1625,4 +1645,4 @@ The final recommended implementation approach is as follows:
 
 ## 30. One-Sentence Summary
 
-This project is an Objective-C windowless macOS Agent App + Rust core library + YAML configuration + TXT dictionary + SQLite usage statistics + a background voice input pipeline where a single `Fn` key supports both hold and tap-to-toggle modes. It uses Doubao ASR 2.0 with two-pass recognition for accuracy and passes interim revision history to the LLM for better correction.
+This project is an Objective-C background macOS Agent App + Rust core library + YAML configuration + TXT dictionary + SQLite usage statistics + a voice input pipeline with configurable trigger/cancel hotkeys, a provider-based ASR config, and Doubao two-pass recognition feeding an OpenAI-compatible LLM for correction.

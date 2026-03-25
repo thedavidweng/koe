@@ -1,6 +1,6 @@
 # Koe (声)
 
-A zero-GUI macOS voice input tool. Press a hotkey, speak, and the corrected text is pasted into whatever app you're using.
+A background-first macOS voice input tool. Press a hotkey, speak, and the corrected text is pasted into whatever app you're using.
 
 For more information, visit the documentation at **[koe.li](https://koe.li)**.
 
@@ -14,8 +14,8 @@ I tried nearly every voice input app on the market. They were either paid, ugly,
 
 Koe takes a different approach:
 
-- **Minimal GUI.** The only visual elements are a menu bar icon and a small floating status pill that shows the current state and real-time speech recognition text during recording.
-- **All configuration lives in plain text files** under `~/.koe/`. Edit them with any text editor, vim, or even a script.
+- **Minimal runtime UI.** Koe stays out of the way with a menu bar item, a small floating status pill during active sessions, and an optional built-in settings window when you actually need to configure it.
+- **All configuration lives in plain text files** under `~/.koe/`. You can edit them with any text editor, vim, a script, or the built-in settings UI.
 - **Dictionary is a plain `.txt` file.** No need to open an app and add words one by one through a GUI. Just edit `~/.koe/dictionary.txt` — one term per line. You can even use Claude Code or other AI tools to bulk-generate domain-specific terms.
 - **Changes take effect immediately.** Edit any config file and the new settings are used automatically. ASR, LLM, dictionary, and prompt changes apply on the next hotkey press. Hotkey changes are detected within a few seconds. No restart, no reload button.
 - **Tiny footprint.** Even after installation, Koe stays **under 15 MB**, and its memory usage is typically **around 20 MB**. It launches fast, wastes almost no disk space, and stays out of your way.
@@ -33,15 +33,14 @@ Koe takes a different approach:
 
 Current provider support is intentionally narrow:
 
-- **ASR**: currently supports **Doubao ASR only**
+- **ASR**: uses a provider-based config layout, but currently ships with **Doubao ASR only**
 - **LLM**: currently supports **OpenAI-compatible APIs only**
 - **Planned**: future ASR support may include the **OpenAI Transcriptions API**
 
 ## Installation
 
-Koe currently supports **Apple Silicon Macs only**. The prebuilt binaries and
-current build configuration target `aarch64-apple-darwin`, so `x86_64` Intel
-Macs are not supported.
+Koe's standard prebuilt path is still **Apple Silicon first**, but Intel Macs
+can now build from source with the dedicated `x86_64` target.
 
 ### Homebrew
 
@@ -75,14 +74,16 @@ The feed file lives at `docs/update-feed.json` and should contain at least:
 
 Optional fields such as `minimum_system_version`, `release_notes_url`, `published_at`,
 and `notes` can also be included. On launch, Koe checks this raw feed automatically,
-and you can also trigger a manual check from the menu bar with `Check for Updates...`.
+checks again periodically, and you can also trigger a manual check from the menu bar
+with `Check for Updates...`. When an update is found, Koe opens the release download
+URL instead of patching the installed app in place.
 
 ### Build from Source
 
 #### Prerequisites
 
 - macOS 13.0+
-- Apple Silicon Mac (`aarch64-apple-darwin`)
+- Apple Silicon or Intel Mac
 - Rust toolchain (`rustup`)
 - Xcode with command line tools
 - [xcodegen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
@@ -96,8 +97,11 @@ cd koe
 # Generate Xcode project
 cd KoeApp && xcodegen && cd ..
 
-# Build everything
+# Build Apple Silicon
 make build
+
+# Build Intel
+make build-x86_64
 ```
 
 #### Run
@@ -126,7 +130,8 @@ To grant permissions: **System Settings → Privacy & Security** → enable Koe 
 
 ## Configuration
 
-All config files live in `~/.koe/` and are auto-generated on first launch:
+All config files live in `~/.koe/` and are auto-generated on first launch. You
+can edit them directly, or use the built-in settings window from the menu bar:
 
 ```
 ~/.koe/
@@ -143,50 +148,57 @@ Below is the full configuration with explanations for every field.
 
 #### ASR (Speech Recognition)
 
-Koe currently supports **Doubao (豆包) ASR 2.0 only** for streaming speech recognition.
-Support for additional ASR providers is not available yet. We may add support for
-the **OpenAI Transcriptions API** in the future.
+Koe now uses a provider-based ASR config layout. The only built-in provider is
+still **Doubao (豆包) ASR 2.0**, and future releases may add more providers such
+as the **OpenAI Transcriptions API**.
 
 ```yaml
 asr:
-  # WebSocket endpoint. Default uses ASR 2.0 optimized bidirectional streaming.
-  # Do not change unless you know what you're doing.
-  url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+  # ASR provider. Currently "doubao" is the only built-in option.
+  provider: "doubao"
 
-  # Volcengine credentials — get these from the 火山引擎 console.
-  # Go to: https://console.volcengine.com/speech/app → create an app → copy App ID and Access Token.
-  app_key: ""          # X-Api-App-Key (火山引擎 App ID)
-  access_key: ""       # X-Api-Access-Key (火山引擎 Access Token)
+  doubao:
+    # WebSocket endpoint. Default uses ASR 2.0 optimized bidirectional streaming.
+    # Do not change unless you know what you're doing.
+    url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
 
-  # Resource ID for billing. Default is the standard duration-based billing plan.
-  resource_id: "volc.seedasr.sauc.duration"
+    # Volcengine credentials — get these from the 火山引擎 console.
+    # Go to: https://console.volcengine.com/speech/app → create an app → copy App ID and Access Token.
+    app_key: ""          # X-Api-App-Key (火山引擎 App ID)
+    access_key: ""       # X-Api-Access-Key (火山引擎 Access Token)
 
-  # Connection timeout in milliseconds. Increase if you have slow network.
-  connect_timeout_ms: 3000
+    # Resource ID for billing. Default is the standard duration-based billing plan.
+    resource_id: "volc.seedasr.sauc.duration"
 
-  # How long to wait for the final ASR result after you stop speaking (ms).
-  # If ASR doesn't return a final result within this time, the best available result is used.
-  final_wait_timeout_ms: 5000
+    # Connection timeout in milliseconds. Increase if you have slow network.
+    connect_timeout_ms: 3000
 
-  # Disfluency removal (语义顺滑). Removes spoken repetitions and filler words like 嗯, 那个.
-  # Recommended: true. Set to false if you want raw transcription.
-  enable_ddc: true
+    # How long to wait for the final ASR result after you stop speaking (ms).
+    # If ASR doesn't return a final result within this time, the best available result is used.
+    final_wait_timeout_ms: 5000
 
-  # Inverse text normalization (文本规范化). Converts spoken numbers, dates, etc.
-  # e.g., "二零二四年" → "2024年", "百分之五十" → "50%"
-  # Recommended: true.
-  enable_itn: true
+    # Disfluency removal (语义顺滑). Removes spoken repetitions and filler words like 嗯, 那个.
+    # Recommended: true. Set to false if you want raw transcription.
+    enable_ddc: true
 
-  # Automatic punctuation. Inserts commas, periods, question marks, etc.
-  # Recommended: true.
-  enable_punc: true
+    # Inverse text normalization (文本规范化). Converts spoken numbers, dates, etc.
+    # e.g., "二零二四年" → "2024年", "百分之五十" → "50%"
+    # Recommended: true.
+    enable_itn: true
 
-  # Two-pass recognition (二遍识别). First pass gives fast streaming results,
-  # second pass re-recognizes with higher accuracy. Slight latency increase (~200ms)
-  # but significantly better accuracy, especially for technical terms.
-  # Recommended: true.
-  enable_nonstream: true
+    # Automatic punctuation. Inserts commas, periods, question marks, etc.
+    # Recommended: true.
+    enable_punc: true
+
+    # Two-pass recognition (二遍识别). First pass gives fast streaming results,
+    # second pass re-recognizes with higher accuracy. Slight latency increase (~200ms)
+    # but significantly better accuracy, especially for technical terms.
+    # Recommended: true.
+    enable_nonstream: true
 ```
+
+Older Koe versions stored Doubao fields directly under `asr:`. Current builds
+migrate that flat format into the provider-based v2 layout automatically.
 
 #### LLM (Text Correction)
 
@@ -197,6 +209,9 @@ are not OpenAI-compatible are not supported directly.
 
 ```yaml
 llm:
+  # Set to false to skip LLM correction and paste raw ASR output directly.
+  enabled: true
+
   # OpenAI-compatible API endpoint.
   # Examples:
   #   OpenAI:    "https://api.openai.com/v1"
@@ -243,9 +258,9 @@ llm:
 
 ```yaml
 feedback:
-  start_sound: true    # Play sound when recording starts
-  stop_sound: true     # Play sound when recording stops
-  error_sound: true    # Play sound on errors
+  start_sound: false   # Play sound when recording starts
+  stop_sound: false    # Play sound when recording stops
+  error_sound: false   # Play sound on errors
 ```
 
 #### Hotkey
@@ -268,7 +283,10 @@ hotkey:
 | `left_command` | Left Command | May conflict with system shortcuts |
 | `right_command` | Right Command | Less conflict-prone than left Command |
 
-Hotkey changes take effect automatically within a few seconds. The trigger key starts voice input, and the cancel key aborts the current session without output.
+Hotkey changes take effect automatically within a few seconds. The trigger key
+starts voice input, and the cancel key aborts the current session without output.
+If the configured trigger key and cancel key collide, Koe normalizes them and
+writes the corrected pair back to `config.yaml`.
 
 #### Dictionary
 
