@@ -949,6 +949,45 @@ pub extern "C" fn sp_core_scan_models_json() -> *mut c_char {
     CString::new(json_str).unwrap_or_default().into_raw()
 }
 
+/// Get a config value by dot-separated key path (e.g. "asr.doubao.app_key").
+/// Returns a heap-allocated C string that must be freed with sp_core_free_string().
+/// Returns an empty string if the key is not found.
+#[no_mangle]
+pub extern "C" fn sp_config_get(key_path: *const c_char) -> *mut c_char {
+    let key = match unsafe { cstr_to_str(key_path) } {
+        Some(s) => s,
+        None => return CString::new("").unwrap().into_raw(),
+    };
+    match config::config_get(key) {
+        Ok(value) => CString::new(value).unwrap_or_default().into_raw(),
+        Err(e) => {
+            log::error!("sp_config_get({key}): {e}");
+            CString::new("").unwrap().into_raw()
+        }
+    }
+}
+
+/// Set a config value by dot-separated key path. Reads, modifies, and writes config.yaml.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn sp_config_set(key_path: *const c_char, value: *const c_char) -> i32 {
+    let key = match unsafe { cstr_to_str(key_path) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let val = match unsafe { cstr_to_str(value) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match config::config_set(key, val) {
+        Ok(()) => 0,
+        Err(e) => {
+            log::error!("sp_config_set({key}): {e}");
+            -1
+        }
+    }
+}
+
 /// Free a string returned by sp_core_scan_models_json().
 #[no_mangle]
 pub extern "C" fn sp_core_free_string(s: *mut c_char) {

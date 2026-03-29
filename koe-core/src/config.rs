@@ -838,6 +838,98 @@ pub fn ensure_defaults() -> Result<bool> {
     Ok(created)
 }
 
+// ─── Key-path Get / Set ────────────────────────────────────────────
+
+/// Get a config value by dot-separated key path (e.g. `"asr.doubao.app_key"`).
+/// Returns an empty string if the key is not found.
+pub fn config_get(key_path: &str) -> Result<String> {
+    let path = config_path();
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| KoeError::Config(format!("read {}: {e}", path.display())))?;
+    let root: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| KoeError::Config(format!("parse {}: {e}", path.display())))?;
+
+    let mut current = &root;
+    for part in key_path.split('.') {
+        let key = serde_yaml::Value::String(part.to_string());
+        match current.as_mapping().and_then(|m| m.get(&key)) {
+            Some(v) => current = v,
+            None => return Ok(String::new()),
+        }
+    }
+
+    let s = match current {
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    };
+    Ok(s)
+}
+
+/// Set a config value by dot-separated key path. Reads, modifies, and writes back.
+/// Creates intermediate mappings as needed. Infers YAML type from the string value.
+pub fn config_set(key_path: &str, value: &str) -> Result<()> {
+    let path = config_path();
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut root: serde_yaml::Value = if raw.trim().is_empty() {
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    } else {
+        serde_yaml::from_str(&raw)
+            .map_err(|e| KoeError::Config(format!("parse {}: {e}", path.display())))?
+    };
+
+    let parts: Vec<&str> = key_path.split('.').collect();
+    let (sections, leaf_slice) = parts.split_at(parts.len() - 1);
+    let leaf = leaf_slice[0];
+
+    let parent = navigate_to_parent(&mut root, sections);
+    parent.insert(
+        serde_yaml::Value::String(leaf.to_string()),
+        yaml_value_from_str(value),
+    );
+
+    let serialized =
+        serde_yaml::to_string(&root).map_err(|e| KoeError::Config(format!("serialize: {e}")))?;
+    std::fs::write(&path, &serialized)
+        .map_err(|e| KoeError::Config(format!("write {}: {e}", path.display())))?;
+
+    Ok(())
+}
+
+/// Recursively navigate into nested YAML mappings by path segments, creating
+/// intermediate mappings as needed. Returns a mutable ref to the final mapping.
+fn navigate_to_parent<'a>(
+    node: &'a mut serde_yaml::Value,
+    sections: &[&str],
+) -> &'a mut serde_yaml::Mapping {
+    if !node.is_mapping() {
+        *node = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    if sections.is_empty() {
+        return node.as_mapping_mut().unwrap();
+    }
+    let (first, rest) = sections.split_first().unwrap();
+    let key = serde_yaml::Value::String(first.to_string());
+    let map = node.as_mapping_mut().unwrap();
+    let child = map
+        .entry(key)
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    navigate_to_parent(child, rest)
+}
+
+/// Infer YAML scalar type from a string value.
+fn yaml_value_from_str(s: &str) -> serde_yaml::Value {
+    match s {
+        "true" => serde_yaml::Value::Bool(true),
+        "false" => serde_yaml::Value::Bool(false),
+        _ => match s.parse::<i64>() {
+            Ok(n) => serde_yaml::Value::Number(n.into()),
+            Err(_) => serde_yaml::Value::String(s.to_string()),
+        },
+    }
+}
+
 const DEFAULT_CONFIG_YAML: &str = r#"# Koe - Voice Input Tool Configuration
 # ~/.koe/config.yaml
 
