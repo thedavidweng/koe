@@ -20,7 +20,9 @@ use crate::llm::openai_compatible::{
 };
 use crate::llm::{CorrectionRequest, LlmProvider};
 use crate::session::{Session, SessionState};
-use koe_asr::{AsrConfig, AsrEvent, AsrProvider, DoubaoWsProvider, QwenAsrProvider, TranscriptAggregator};
+use koe_asr::{
+    AsrConfig, AsrEvent, AsrProvider, DoubaoWsProvider, QwenAsrProvider, TranscriptAggregator,
+};
 #[cfg(feature = "mlx")]
 use koe_asr::{MlxConfig, MlxProvider};
 #[cfg(feature = "sherpa-onnx")]
@@ -36,10 +38,11 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
 const LLM_WARMUP_SAFETY_MARGIN: Duration = Duration::from_secs(20);
-const LLM_WARMUP_TTL: Duration = match LLM_HTTP_POOL_IDLE_TIMEOUT.checked_sub(LLM_WARMUP_SAFETY_MARGIN) {
-    Some(duration) => duration,
-    None => Duration::from_secs(0),
-};
+const LLM_WARMUP_TTL: Duration =
+    match LLM_HTTP_POOL_IDLE_TIMEOUT.checked_sub(LLM_WARMUP_SAFETY_MARGIN) {
+        Some(duration) => duration,
+        None => Duration::from_secs(0),
+    };
 
 #[derive(Default)]
 struct LlmWarmupState {
@@ -106,7 +109,8 @@ pub extern "C" fn sp_core_create(config_path: *const c_char) -> i32 {
 
     // Load prompts
     let system_prompt = prompt::load_system_prompt(&config::resolve_system_prompt_path(&cfg));
-    let user_prompt_template = prompt::load_user_prompt_template(&config::resolve_user_prompt_path(&cfg));
+    let user_prompt_template =
+        prompt::load_user_prompt_template(&config::resolve_user_prompt_path(&cfg));
 
     let runtime = match Runtime::new() {
         Ok(rt) => rt,
@@ -181,7 +185,8 @@ pub extern "C" fn sp_core_reload_config() -> i32 {
     };
 
     let system_prompt = prompt::load_system_prompt(&config::resolve_system_prompt_path(&cfg));
-    let user_prompt_template = prompt::load_user_prompt_template(&config::resolve_user_prompt_path(&cfg));
+    let user_prompt_template =
+        prompt::load_user_prompt_template(&config::resolve_user_prompt_path(&cfg));
 
     let mut global = CORE.lock().unwrap();
     if let Some(ref mut core) = *global {
@@ -234,8 +239,10 @@ pub extern "C" fn sp_core_session_begin(context: SPSessionContext) -> i32 {
         if let Ok(d) = dictionary::load_dictionary(&dict_path) {
             core.dictionary = d;
         }
-        core.system_prompt = prompt::load_system_prompt(&config::resolve_system_prompt_path(&new_cfg));
-        core.user_prompt_template = prompt::load_user_prompt_template(&config::resolve_user_prompt_path(&new_cfg));
+        core.system_prompt =
+            prompt::load_system_prompt(&config::resolve_system_prompt_path(&new_cfg));
+        core.user_prompt_template =
+            prompt::load_user_prompt_template(&config::resolve_user_prompt_path(&new_cfg));
         if llm_http_client_needs_reload(&core.config, &new_cfg) {
             match build_http_client(new_cfg.llm.timeout_ms) {
                 Ok(client) => {
@@ -355,7 +362,10 @@ pub extern "C" fn sp_core_session_begin(context: SPSessionContext) -> i32 {
                 hotwords_score: s.hotwords_score,
                 endpoint_silence: s.endpoint_silence,
             };
-            (AsrConfig::default(), Box::new(SherpaOnnxProvider::new(sherpa_config)))
+            (
+                AsrConfig::default(),
+                Box::new(SherpaOnnxProvider::new(sherpa_config)),
+            )
         }
         _ => {
             let doubao = &cfg.asr.doubao;
@@ -420,11 +430,7 @@ pub extern "C" fn sp_core_session_begin(context: SPSessionContext) -> i32 {
 
 /// Push an audio frame into the current session.
 #[no_mangle]
-pub extern "C" fn sp_core_push_audio(
-    frame: *const u8,
-    len: u32,
-    _timestamp: u64,
-) -> i32 {
+pub extern "C" fn sp_core_push_audio(frame: *const u8, len: u32, _timestamp: u64) -> i32 {
     if frame.is_null() || len == 0 {
         return -1;
     }
@@ -701,17 +707,22 @@ async fn run_session(
         );
 
         // Filter dictionary candidates for prompt
-        let candidates = prompt::filter_dictionary_candidates(
-            &dictionary,
-            &asr_text,
-            dictionary_max_candidates,
-        );
+        let candidates =
+            prompt::filter_dictionary_candidates(&dictionary, &asr_text, dictionary_max_candidates);
 
         log::info!("[{session_id}] LLM request — asr_text: \"{}\"", asr_text);
-        log::info!("[{session_id}] LLM request — {} dictionary entries, {} interim revisions",
-            candidates.len(), interim_history.len());
+        log::info!(
+            "[{session_id}] LLM request — {} dictionary entries, {} interim revisions",
+            candidates.len(),
+            interim_history.len()
+        );
 
-        let user_prompt = prompt::render_user_prompt(&user_prompt_template, &asr_text, &candidates, &interim_history);
+        let user_prompt = prompt::render_user_prompt(
+            &user_prompt_template,
+            &asr_text,
+            &candidates,
+            &interim_history,
+        );
         log::debug!("[{session_id}] LLM user prompt:\n{}", user_prompt);
 
         let request = CorrectionRequest {
@@ -772,10 +783,7 @@ async fn run_session(
     invoke_state_changed("idle");
 }
 
-async fn wait_for_final(
-    asr: &mut dyn AsrProvider,
-    aggregator: &mut TranscriptAggregator,
-) {
+async fn wait_for_final(asr: &mut dyn AsrProvider, aggregator: &mut TranscriptAggregator) {
     loop {
         match asr.next_event().await {
             Ok(AsrEvent::Final(text)) => {
@@ -893,11 +901,7 @@ pub type ModelProgressCallback = extern "C" fn(
 
 /// Status callback for model downloads.
 /// status: 0=started, 1=completed, 2=error, 3=cancelled
-pub type ModelStatusCallback = extern "C" fn(
-    ctx: *mut c_void,
-    status: i32,
-    message: *const c_char,
-);
+pub type ModelStatusCallback = extern "C" fn(ctx: *mut c_void, status: i32, message: *const c_char);
 
 struct ModelCallbackCtx {
     ctx: *mut c_void,
@@ -1004,7 +1008,11 @@ pub extern "C" fn sp_core_download_model(
         clone
     };
 
-    let cb = Arc::new(ModelCallbackCtx { ctx, progress_cb, status_cb });
+    let cb = Arc::new(ModelCallbackCtx {
+        ctx,
+        progress_cb,
+        status_cb,
+    });
 
     let global = CORE.lock().unwrap();
     let runtime = match global.as_ref() {

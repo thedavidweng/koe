@@ -230,14 +230,20 @@ pub struct HotkeySection {
     /// Options: "fn", "left_option", "right_option", "left_command", "right_command", "left_control", "right_control"
     /// Or a raw keycode number (e.g. 122 for F1) for non-modifier keys.
     /// Default: "fn"
-    #[serde(default = "default_trigger_key", deserialize_with = "deserialize_string_or_int")]
+    #[serde(
+        default = "default_trigger_key",
+        deserialize_with = "deserialize_string_or_int"
+    )]
     pub trigger_key: String,
 
     /// Cancel key for aborting the current voice input session.
     /// Options: "fn", "left_option", "right_option", "left_command", "right_command", "left_control", "right_control"
     /// Or a raw keycode number (e.g. 122 for F1) for non-modifier keys.
     /// Default: "left_option"
-    #[serde(default = "default_cancel_key", deserialize_with = "deserialize_string_or_int")]
+    #[serde(
+        default = "default_cancel_key",
+        deserialize_with = "deserialize_string_or_int"
+    )]
     pub cancel_key: String,
 }
 
@@ -292,7 +298,8 @@ impl HotkeySection {
 
     fn normalize_trigger_key_name(value: &str) -> String {
         match value {
-            "left_option" | "right_option" | "left_command" | "right_command" | "left_control" | "right_control" | "fn" => value.into(),
+            "left_option" | "right_option" | "left_command" | "right_command" | "left_control"
+            | "right_control" | "fn" => value.into(),
             _ if Self::parse_raw_keycode(value).is_some() => value.into(),
             _ => default_trigger_key(),
         }
@@ -300,7 +307,8 @@ impl HotkeySection {
 
     fn normalize_cancel_key_name(value: &str) -> String {
         match value {
-            "left_option" | "right_option" | "left_command" | "right_command" | "left_control" | "right_control" | "fn" => value.into(),
+            "left_option" | "right_option" | "left_command" | "right_command" | "left_control"
+            | "right_control" | "fn" => value.into(),
             _ if Self::parse_raw_keycode(value).is_some() => value.into(),
             _ => default_cancel_key(),
         }
@@ -310,7 +318,10 @@ impl HotkeySection {
     /// Supports decimal (e.g. "122") and hex with 0x prefix (e.g. "0x7a").
     fn parse_raw_keycode(value: &str) -> Option<u16> {
         let trimmed = value.trim();
-        if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+        if let Some(hex) = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+        {
             u16::from_str_radix(hex, 16).ok()
         } else {
             trimmed.parse::<u16>().ok()
@@ -320,34 +331,34 @@ impl HotkeySection {
     fn resolve_key(key: &str) -> HotkeyParams {
         match key {
             "left_option" => HotkeyParams {
-                key_code: 58,       // kVK_Option
+                key_code: 58, // kVK_Option
                 alt_key_code: 0,
-                modifier_flag: 0x00000020,  // NX_DEVICELALTKEYMASK
+                modifier_flag: 0x00000020, // NX_DEVICELALTKEYMASK
             },
             "right_option" => HotkeyParams {
-                key_code: 61,       // kVK_RightOption
+                key_code: 61, // kVK_RightOption
                 alt_key_code: 0,
-                modifier_flag: 0x00000040,  // NX_DEVICERALTKEYMASK
+                modifier_flag: 0x00000040, // NX_DEVICERALTKEYMASK
             },
             "left_command" => HotkeyParams {
-                key_code: 55,       // kVK_Command
+                key_code: 55, // kVK_Command
                 alt_key_code: 0,
-                modifier_flag: 0x00000008,  // NX_DEVICELCMDKEYMASK
+                modifier_flag: 0x00000008, // NX_DEVICELCMDKEYMASK
             },
             "right_command" => HotkeyParams {
-                key_code: 54,       // kVK_RightCommand
+                key_code: 54, // kVK_RightCommand
                 alt_key_code: 0,
-                modifier_flag: 0x00000010,  // NX_DEVICERCMDKEYMASK
+                modifier_flag: 0x00000010, // NX_DEVICERCMDKEYMASK
             },
             "left_control" => HotkeyParams {
-                key_code: 59,       // kVK_Control
+                key_code: 59, // kVK_Control
                 alt_key_code: 0,
-                modifier_flag: 0x00000001,  // NX_DEVICELCTLKEYMASK
+                modifier_flag: 0x00000001, // NX_DEVICELCTLKEYMASK
             },
             "right_control" => HotkeyParams {
-                key_code: 62,       // kVK_RightControl
+                key_code: 62, // kVK_RightControl
                 alt_key_code: 0,
-                modifier_flag: 0x00002000,  // NX_DEVICERCTLKEYMASK
+                modifier_flag: 0x00002000, // NX_DEVICERCTLKEYMASK
             },
             // Raw keycode (non-modifier key, detected via keyDown/keyUp)
             _ if Self::parse_raw_keycode(key).is_some() => {
@@ -357,12 +368,12 @@ impl HotkeySection {
                     alt_key_code: 0,
                     modifier_flag: 0,
                 }
-            },
+            }
             // "fn" or anything else defaults to Fn/Globe
             _ => HotkeyParams {
-                key_code: 63,       // kVK_Function (Fn)
-                alt_key_code: 179,  // Globe key on newer keyboards
-                modifier_flag: 0x00800000,  // NSEventModifierFlagFunction
+                key_code: 63,              // kVK_Function (Fn)
+                alt_key_code: 179,         // Globe key on newer keyboards
+                modifier_flag: 0x00800000, // NSEventModifierFlagFunction
             },
         }
     }
@@ -574,9 +585,16 @@ fn substitute_env_vars(input: &str) -> String {
 
 /// V1 ASR fields that indicate the old flat format.
 const V1_ASR_KEYS: &[&str] = &[
-    "app_key", "access_key", "url", "resource_id",
-    "connect_timeout_ms", "final_wait_timeout_ms",
-    "enable_ddc", "enable_itn", "enable_punc", "enable_nonstream",
+    "app_key",
+    "access_key",
+    "url",
+    "resource_id",
+    "connect_timeout_ms",
+    "final_wait_timeout_ms",
+    "enable_ddc",
+    "enable_itn",
+    "enable_punc",
+    "enable_nonstream",
 ];
 
 /// Check if the config file uses V1 ASR format (flat fields under `asr:`)
@@ -609,9 +627,9 @@ fn migrate_config_v1_to_v2(path: &Path) -> Result<bool> {
     }
 
     // Check if any V1-specific key exists
-    let has_v1_keys = V1_ASR_KEYS.iter().any(|k| {
-        asr_map.contains_key(&serde_yaml::Value::String((*k).into()))
-    });
+    let has_v1_keys = V1_ASR_KEYS
+        .iter()
+        .any(|k| asr_map.contains_key(&serde_yaml::Value::String((*k).into())));
 
     if !has_v1_keys {
         return Ok(false);
@@ -689,9 +707,9 @@ fn normalize_hotkey_config(path: &Path, config: &Config) -> Result<bool> {
     let (normalized_trigger, normalized_cancel) = config.hotkey.normalized_keys();
     let hotkey_key = serde_yaml::Value::String("hotkey".into());
 
-    let hotkey_value = doc_map.entry(hotkey_key).or_insert_with(|| {
-        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
-    });
+    let hotkey_value = doc_map
+        .entry(hotkey_key)
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
 
     let hotkey_map = match hotkey_value.as_mapping_mut() {
         Some(map) => map,
@@ -722,8 +740,9 @@ fn normalize_hotkey_config(path: &Path, config: &Config) -> Result<bool> {
          {yaml_str}"
     );
 
-    std::fs::write(path, &output)
-        .map_err(|e| KoeError::Config(format!("write normalized config {}: {e}", path.display())))?;
+    std::fs::write(path, &output).map_err(|e| {
+        KoeError::Config(format!("write normalized config {}: {e}", path.display()))
+    })?;
 
     log::info!("normalized hotkey config on disk");
     Ok(true)
@@ -935,11 +954,7 @@ mod tests {
     #[test]
     fn normalize_hotkey_config_backfills_missing_cancel_key() {
         let path = temp_config_path("hotkey-config");
-        fs::write(
-            &path,
-            "hotkey:\n  trigger_key: left_option\n",
-        )
-        .unwrap();
+        fs::write(&path, "hotkey:\n  trigger_key: left_option\n").unwrap();
 
         let config = Config {
             hotkey: HotkeySection {

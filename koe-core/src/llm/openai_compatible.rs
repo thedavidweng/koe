@@ -45,11 +45,7 @@ impl OpenAiCompatibleProvider {
 
     pub async fn warmup(&self) -> Result<()> {
         let model = encode(&self.model);
-        let url = format!(
-            "{}/models/{}",
-            self.base_url.trim_end_matches('/'),
-            model
-        );
+        let url = format!("{}/models/{}", self.base_url.trim_end_matches('/'), model);
 
         log::debug!("LLM warmup request to {url}");
 
@@ -96,10 +92,7 @@ pub fn build_http_client(timeout_ms: u64) -> std::result::Result<Client, reqwest
 
 impl LlmProvider for OpenAiCompatibleProvider {
     async fn correct(&self, request: &CorrectionRequest) -> Result<String> {
-        let url = format!(
-            "{}/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let mut body = json!({
             "model": self.model,
@@ -121,7 +114,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
             LlmMaxTokenParameter::MaxCompletionTokens => "max_completion_tokens",
         };
         body[token_field_name] = json!(self.max_output_tokens);
-        if matches!(self.max_token_parameter, LlmMaxTokenParameter::MaxCompletionTokens) {
+        if matches!(
+            self.max_token_parameter,
+            LlmMaxTokenParameter::MaxCompletionTokens
+        ) {
             body["reasoning_effort"] = json!("none");
         }
 
@@ -146,9 +142,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(KoeError::LlmFailed(format!(
-                "HTTP {status}: {text}"
-            )));
+            return Err(KoeError::LlmFailed(format!("HTTP {status}: {text}")));
         }
 
         let json: Value = response
