@@ -7,16 +7,17 @@ use crate::event::AsrEvent;
 // ─── C FFI declarations (implemented in Swift KoeAppleSpeech package, resolved at link time) ──
 
 extern "C" {
+    /// Returns session generation (>0) on success, 0 on failure.
     fn koe_apple_speech_start_session(
         locale: *const c_char,
         contextual_strings: *const u8,
         contextual_strings_len: u32,
         callback: extern "C" fn(ctx: *mut c_void, event_type: i32, text: *const c_char),
         ctx: *mut c_void,
-    ) -> i32;
-    fn koe_apple_speech_feed_audio(bytes: *const u8, count: u32);
-    fn koe_apple_speech_stop();
-    fn koe_apple_speech_cancel();
+    ) -> u64;
+    fn koe_apple_speech_feed_audio(bytes: *const u8, count: u32, generation: u64);
+    fn koe_apple_speech_stop(generation: u64);
+    fn koe_apple_speech_cancel(generation: u64);
 }
 
 // ─── Event callback trampoline ───────────────────────────────────────
@@ -35,7 +36,10 @@ extern "C" fn apple_speech_event_trampoline(
     } else {
         unsafe { CStr::from_ptr(text) }
             .to_str()
-            .unwrap_or("")
+            .unwrap_or_else(|e| {
+                log::warn!("Apple Speech: invalid UTF-8 in event text: {e}");
+                ""
+            })
             .to_string()
     };
     let event = match event_type {
@@ -74,6 +78,10 @@ pub struct AppleSpeechProvider {
     /// Leaked sender pointer passed as callback context.
     /// Reclaimed in close()/drop.
     event_tx_ptr: Option<*mut c_void>,
+    /// Session generation returned by the Swift singleton.
+    /// Passed to all subsequent FFI calls so stale operations from an old
+    /// provider are ignored when a new session has already started.
+    session_generation: u64,
 }
 
 // Safety: The raw pointer is only accessed from the callback (which is Send)
@@ -86,6 +94,7 @@ impl AppleSpeechProvider {
             config,
             event_rx: None,
             event_tx_ptr: None,
+            session_generation: 0,
         }
     }
 
@@ -131,7 +140,7 @@ impl crate::provider::AsrProvider for AppleSpeechProvider {
         let tx_ptr = Box::into_raw(tx_box) as *mut c_void;
         self.event_tx_ptr = Some(tx_ptr);
 
-        let ret = unsafe {
+        let gen = unsafe {
             koe_apple_speech_start_session(
                 locale.as_ptr(),
                 if ctx_strings_blob.is_empty() {
@@ -144,12 +153,23 @@ impl crate::provider::AsrProvider for AppleSpeechProvider {
                 tx_ptr,
             )
         };
-        if ret != 0 {
+        if gen == 0 {
+            // Drain any error events sent by Swift before returning failure
+            let detail = self.event_rx.as_mut().and_then(|rx| {
+                while let Ok(event) = rx.try_recv() {
+                    if let AsrEvent::Error(msg) = event {
+                        return Some(msg);
+                    }
+                }
+                None
+            });
             self.reclaim_sender();
+            self.event_rx = None;
             return Err(AsrError::Connection(
-                "failed to start Apple Speech session".into(),
+                detail.unwrap_or_else(|| "failed to start Apple Speech session".into()),
             ));
         }
+        self.session_generation = gen;
 
         Ok(())
     }
@@ -157,14 +177,14 @@ impl crate::provider::AsrProvider for AppleSpeechProvider {
     async fn send_audio(&mut self, frame: &[u8]) -> Result<()> {
         // Pass raw PCM16 LE bytes directly; Swift side converts to Float32
         unsafe {
-            koe_apple_speech_feed_audio(frame.as_ptr(), frame.len() as u32);
+            koe_apple_speech_feed_audio(frame.as_ptr(), frame.len() as u32, self.session_generation);
         }
         Ok(())
     }
 
     async fn finish_input(&mut self) -> Result<()> {
         unsafe {
-            koe_apple_speech_stop();
+            koe_apple_speech_stop(self.session_generation);
         }
         Ok(())
     }
@@ -183,8 +203,10 @@ impl crate::provider::AsrProvider for AppleSpeechProvider {
         // SAFETY: koe_apple_speech_cancel() synchronously clears the callback
         // context on the Swift side (under a lock), ensuring no further calls
         // through the callback pointer after this returns.
+        // The generation parameter ensures that if a new session has already
+        // started on the singleton, this stale cancel is a no-op.
         unsafe {
-            koe_apple_speech_cancel();
+            koe_apple_speech_cancel(self.session_generation);
         }
         self.event_rx = None;
         self.reclaim_sender();

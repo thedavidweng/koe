@@ -42,37 +42,41 @@ class AppleSpeechManager {
 
     // MARK: - Session Lifecycle
 
+    /// Start a new session. Returns the session generation (>0) on success, 0 on failure.
     func startSession(
         locale localeStr: String,
         contextualStrings: [String],
         callback: AppleSpeechEventCallback,
         context: UnsafeMutableRawPointer?
-    ) -> Bool {
+    ) -> UInt64 {
         guard #available(macOS 26.0, *) else {
             callback(context, 3, "Apple Speech requires macOS 26.0 or later")
             callback(context, 5, nil)
-            return false
+            return 0
         }
 
         // Cancel any in-flight session
         cancelInternal()
 
+        // Bump generation and install callback atomically so that
+        // invokeCallback's generation check is consistent.
+        callbackLock.lock()
         generation &+= 1
         let thisGeneration = generation
-
         self.callback = callback
         self.callbackCtx = context
+        callbackLock.unlock()
 
         return startSessionImpl(
             localeStr: localeStr,
             contextualStrings: contextualStrings,
             generation: thisGeneration
-        )
+        ) ? thisGeneration : 0
     }
 
     /// Feed raw PCM16 LE audio bytes.
-    func feedAudio(_ bytes: UnsafePointer<UInt8>, count: Int) {
-        guard count >= 2, let yield = yieldAudio else { return }
+    func feedAudio(_ bytes: UnsafePointer<UInt8>, count: Int, generation gen: UInt64) {
+        guard gen == generation, count >= 2, let yield = yieldAudio else { return }
 
         let sampleCount = count / 2
 
@@ -90,14 +94,16 @@ class AppleSpeechManager {
     }
 
     /// Signal end of audio input, triggering finalization.
-    func stop() {
+    func stop(generation gen: UInt64) {
+        guard gen == generation else { return }
         finishAudio?()
         finishAudio = nil
         yieldAudio = nil
     }
 
     /// Cancel the session immediately.
-    func cancel() {
+    func cancel(generation gen: UInt64) {
+        guard gen == generation else { return }
         cancelInternal()
     }
 
@@ -119,10 +125,10 @@ class AppleSpeechManager {
         resultsTask = nil
     }
 
-    private func invokeCallback(eventType: Int32, text: String?) {
+    private func invokeCallback(eventType: Int32, text: String?, generation expectedGen: UInt64) {
         callbackLock.lock()
         defer { callbackLock.unlock() }
-        guard let cb = callback, let ctx = callbackCtx else { return }
+        guard self.generation == expectedGen, let cb = callback, let ctx = callbackCtx else { return }
         if let text = text {
             text.withCString { cstr in
                 cb(ctx, eventType, cstr)
@@ -166,7 +172,7 @@ class AppleSpeechManager {
         )
 
         // Emit Connected event
-        invokeCallback(eventType: 4, text: "")
+        invokeCallback(eventType: 4, text: "", generation: thisGeneration)
 
         // Task 1: Check asset status, install if needed, then drive the analyzer
         analyzerTask = Task { [weak self] in
@@ -176,8 +182,8 @@ class AppleSpeechManager {
                 switch status {
                 case .unsupported:
                     guard let self = self, self.generation == thisGeneration else { return }
-                    self.invokeCallback(eventType: 3, text: "Speech recognition is not supported for locale \"\(localeStr)\"")
-                    self.invokeCallback(eventType: 5, text: nil)
+                    self.invokeCallback(eventType: 3, text: "Speech recognition is not supported for locale \"\(localeStr)\"", generation: thisGeneration)
+                    self.invokeCallback(eventType: 5, text: nil, generation: thisGeneration)
                     return
                 case .supported:
                     // Asset available but not downloaded — trigger installation
@@ -211,7 +217,7 @@ class AppleSpeechManager {
                 // Normal cancellation
             } catch {
                 guard let self = self, self.generation == thisGeneration else { return }
-                self.invokeCallback(eventType: 3, text: error.localizedDescription)
+                self.invokeCallback(eventType: 3, text: error.localizedDescription, generation: thisGeneration)
             }
         }
 
@@ -238,21 +244,21 @@ class AppleSpeechManager {
                     }
 
                     let fullText = finalizedTranscript + volatileTranscript
-                    self.invokeCallback(eventType: 0, text: fullText)
+                    self.invokeCallback(eventType: 0, text: fullText, generation: thisGeneration)
                 }
                 // Results stream ended — emit final + closed
                 guard let self = self, self.generation == thisGeneration else { return }
                 let finalText = finalizedTranscript + volatileTranscript
                 if !finalText.isEmpty {
-                    self.invokeCallback(eventType: 2, text: finalText)
+                    self.invokeCallback(eventType: 2, text: finalText, generation: thisGeneration)
                 }
-                self.invokeCallback(eventType: 5, text: nil)
+                self.invokeCallback(eventType: 5, text: nil, generation: thisGeneration)
             } catch is CancellationError {
                 // Normal cancellation
             } catch {
                 guard let self = self, self.generation == thisGeneration else { return }
-                self.invokeCallback(eventType: 3, text: error.localizedDescription)
-                self.invokeCallback(eventType: 5, text: nil)
+                self.invokeCallback(eventType: 3, text: error.localizedDescription, generation: thisGeneration)
+                self.invokeCallback(eventType: 5, text: nil, generation: thisGeneration)
             }
         }
 

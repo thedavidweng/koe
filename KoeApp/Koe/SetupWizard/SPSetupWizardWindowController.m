@@ -1359,6 +1359,7 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType, const char 
                 NSInteger matchIdx = (exactIdx >= 0) ? exactIdx : equivIdx;
                 if (matchIdx >= 0) {
                     [self.appleSpeechLocalePopup selectItemAtIndex:matchIdx];
+                    [self updateAppleSpeechAssetStatus];
                 }
             }
         }

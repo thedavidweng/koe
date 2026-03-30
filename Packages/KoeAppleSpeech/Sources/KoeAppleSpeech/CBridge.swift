@@ -12,7 +12,7 @@ private var manager = AppleSpeechManager()
 ///   - contextualStringsLen: Byte length of the contextualStrings blob
 ///   - callback: C callback for ASR events (event_type, text)
 ///   - ctx: Opaque pointer passed back to the callback
-/// - Returns: 0 on success, -1 on failure
+/// - Returns: Session generation (>0) on success, 0 on failure
 @_cdecl("koe_apple_speech_start_session")
 public func koeAppleSpeechStartSession(
     _ locale: UnsafePointer<CChar>?,
@@ -20,11 +20,11 @@ public func koeAppleSpeechStartSession(
     _ contextualStringsLen: UInt32,
     _ callback: @convention(c) (UnsafeMutableRawPointer?, Int32, UnsafePointer<CChar>?) -> Void,
     _ ctx: UnsafeMutableRawPointer?
-) -> Int32 {
+) -> UInt64 {
     guard let locale = locale else {
         callback(ctx, 3, "locale is required")
         callback(ctx, 5, nil)
-        return -1
+        return 0
     }
     let localeStr = String(cString: locale)
 
@@ -45,12 +45,12 @@ public func koeAppleSpeechStartSession(
         if !granted {
             callback(ctx, 3, "Speech recognition permission was denied. Please grant in System Settings → Privacy & Security → Speech Recognition.")
             callback(ctx, 5, nil)
-            return -1
+            return 0
         }
     default:
         callback(ctx, 3, "Speech recognition permission not granted. Please enable in System Settings → Privacy & Security → Speech Recognition.")
         callback(ctx, 5, nil)
-        return -1
+        return 0
     }
 
     // Parse null-separated contextual strings
@@ -67,29 +67,30 @@ public func koeAppleSpeechStartSession(
         contextualStrings: strings,
         callback: callback,
         context: ctx
-    ) ? 0 : -1
+    )
 }
 
 /// Feed raw PCM16 LE audio bytes into the current session.
 @_cdecl("koe_apple_speech_feed_audio")
 public func koeAppleSpeechFeedAudio(
     _ bytes: UnsafePointer<UInt8>?,
-    _ count: UInt32
+    _ count: UInt32,
+    _ generation: UInt64
 ) {
     guard let bytes = bytes else { return }
-    manager.feedAudio(bytes, count: Int(count))
+    manager.feedAudio(bytes, count: Int(count), generation: generation)
 }
 
 /// Signal end of audio input, triggering final recognition.
 @_cdecl("koe_apple_speech_stop")
-public func koeAppleSpeechStop() {
-    manager.stop()
+public func koeAppleSpeechStop(_ generation: UInt64) {
+    manager.stop(generation: generation)
 }
 
 /// Cancel the current session immediately.
 @_cdecl("koe_apple_speech_cancel")
-public func koeAppleSpeechCancel() {
-    manager.cancel()
+public func koeAppleSpeechCancel(_ generation: UInt64) {
+    manager.cancel(generation: generation)
 }
 
 // MARK: - Asset Management (for Setup Wizard UI)
@@ -107,7 +108,9 @@ public func koeAppleSpeechIsAvailable() -> Int32 {
 /// Return supported locales as a null-separated UTF-8 string blob.
 /// Each entry is "identifier\0displayName" pairs separated by \0\0.
 /// Format: "zh_CN\0Chinese (China mainland)\0\0en_US\0English (United States)\0\0..."
-/// Caller must free the returned pointer with free().
+/// Ownership: the returned pointer was allocated with malloc().
+/// The caller is responsible for freeing it (e.g. via free() or
+/// NSData dataWithBytesNoCopy:freeWhenDone:YES).
 /// Returns NULL if not available.
 @_cdecl("koe_apple_speech_supported_locales")
 public func koeAppleSpeechSupportedLocales(_ outLen: UnsafeMutablePointer<UInt32>) -> UnsafeMutablePointer<UInt8>? {
