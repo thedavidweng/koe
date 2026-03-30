@@ -57,7 +57,7 @@ extern "C" fn apple_speech_event_trampoline(
 /// Configuration for the Apple Speech ASR provider.
 #[derive(Debug, Clone)]
 pub struct AppleSpeechConfig {
-    /// Locale identifier (e.g. "zh-Hans", "en-US")
+    /// Locale identifier (e.g. "zh_CN", "en_US")
     pub locale: String,
     /// Dictionary entries to pass as contextual strings for vocabulary bias
     pub contextual_strings: Vec<String>,
