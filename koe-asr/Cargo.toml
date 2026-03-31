@@ -1,9 +1,11 @@
 [package]
 name = "koe-asr"
-version = "0.1.0"
-edition = "2021"
 description = "Streaming ASR (Automatic Speech Recognition) client for Volcengine/Doubao and Aliyun"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true

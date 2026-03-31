@@ -2,6 +2,14 @@
 members = ["koe-asr", "koe-core", "koe-cli"]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+repository = "https://github.com/erning/koe"
+rust-version = "1.85"
+
 [workspace.dependencies]
 # shared
 async-trait = "0.1"
