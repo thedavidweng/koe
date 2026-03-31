@@ -20,6 +20,7 @@
 @property (nonatomic, strong) NSDate *recordingStartTime;
 @property (nonatomic, assign) time_t lastConfigModTime;
 @property (nonatomic, copy) dispatch_block_t pendingSessionEndBlock;
+@property (nonatomic, assign) BOOL showingError;
 @end
 
 @implementation SPAppDelegate
@@ -225,8 +226,11 @@
     [self.statusBarManager updateState:@"recording"];
     [self.overlayPanel updateState:@"recording"];
 
-    // Start audio capture + Rust session
-    [self.rustBridge beginSessionWithMode:SPSessionModeHold];
+    // Start Rust session + audio capture
+    if (![self.rustBridge beginSessionWithMode:SPSessionModeHold]) {
+        [self handleAudioCaptureError:@"Failed to start session"];
+        return;
+    }
     [self.audioCaptureManager setInputDeviceID:[self.audioDeviceManager resolvedDeviceID]];
     BOOL started = [self.audioCaptureManager startCaptureWithAudioCallback:^(const void *buffer, uint32_t length, uint64_t timestamp) {
         [self.rustBridge pushAudioFrame:buffer length:length timestamp:timestamp];
@@ -265,7 +269,10 @@
     [self.statusBarManager updateState:@"recording"];
     [self.overlayPanel updateState:@"recording"];
 
-    [self.rustBridge beginSessionWithMode:SPSessionModeToggle];
+    if (![self.rustBridge beginSessionWithMode:SPSessionModeToggle]) {
+        [self handleAudioCaptureError:@"Failed to start session"];
+        return;
+    }
     [self.audioCaptureManager setInputDeviceID:[self.audioDeviceManager resolvedDeviceID]];
     BOOL started = [self.audioCaptureManager startCaptureWithAudioCallback:^(const void *buffer, uint32_t length, uint64_t timestamp) {
         [self.rustBridge pushAudioFrame:buffer length:length timestamp:timestamp];
@@ -414,6 +421,7 @@
 }
 
 - (void)rustBridgeDidChangeState:(NSString *)state {
+    if (self.showingError) return;
     [self.statusBarManager updateState:state];
     [self.overlayPanel updateState:state];
 }
@@ -422,6 +430,7 @@
 
 - (void)handleAudioCaptureError:(NSString *)reason {
     NSLog(@"[Koe] Audio capture error: %@", reason);
+    self.showingError = YES;
     [self.cuePlayer playError];
     [self.rustBridge cancelSession];
     [self.hotkeyMonitor resetToIdle];
@@ -433,6 +442,7 @@
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (token != self.rustBridge.currentSessionToken) return;
+        self.showingError = NO;
         [self.statusBarManager updateState:@"idle"];
         [self.overlayPanel updateState:@"idle"];
     });

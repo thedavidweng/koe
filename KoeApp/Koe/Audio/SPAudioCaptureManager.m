@@ -138,9 +138,8 @@ static const NSUInteger kFrameSamples = 3200; // 200ms at 16kHz
 
     NSError *error = nil;
     [self.audioEngine prepare];
-    [self.audioEngine startAndReturnError:&error];
-    if (error) {
-        NSLog(@"[Koe] Audio engine start failed: %@", error.localizedDescription);
+    if (![self.audioEngine startAndReturnError:&error]) {
+        NSLog(@"[Koe] Audio engine start failed: %@", error.localizedDescription ?: @"unknown error");
         return NO;
     }
 
