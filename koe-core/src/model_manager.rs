@@ -907,6 +907,56 @@ mod tests {
     }
 
     #[test]
+    fn remove_model_files_handles_subdirectories() {
+        let tmp = std::env::temp_dir().join(format!(
+            "koe-model-test-nested-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&tmp).unwrap();
+
+        let manifest = ModelManifest {
+            provider: "test".into(),
+            description: "test".into(),
+            repo: "test/model".into(),
+            files: vec![
+                ModelFile {
+                    name: "weights.bin".into(),
+                    size: 10,
+                    sha256: String::new(),
+                    url: String::new(),
+                },
+                ModelFile {
+                    name: "subdir/config.json".into(),
+                    size: 5,
+                    sha256: String::new(),
+                    url: String::new(),
+                },
+            ],
+        };
+        fs::write(
+            tmp.join(MANIFEST_FILE),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        // Create files including nested ones
+        fs::write(tmp.join("weights.bin"), b"0123456789").unwrap();
+        fs::create_dir_all(tmp.join("subdir")).unwrap();
+        fs::write(tmp.join("subdir/config.json"), b"12345").unwrap();
+
+        let removed = remove_model_files(&tmp).unwrap();
+        assert_eq!(removed, 2);
+        assert!(tmp.join(MANIFEST_FILE).exists());
+        assert!(!tmp.join("weights.bin").exists());
+        assert!(!tmp.join("subdir").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn mtime_change_invalidates_cache() {
         let tmp = std::env::temp_dir().join(format!(
             "koe-model-test-mtime-{}",
