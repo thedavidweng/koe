@@ -217,6 +217,7 @@
 
 - (void)hotkeyMonitorDidDetectHoldStart {
     NSLog(@"[Koe] Hold start detected");
+    self.showingError = NO;
     [self cancelPendingSessionEnd];
     [self.audioCaptureManager stopCapture];
 
@@ -260,6 +261,7 @@
 
 - (void)hotkeyMonitorDidDetectTapStart {
     NSLog(@"[Koe] Tap start detected");
+    self.showingError = NO;
     [self cancelPendingSessionEnd];
     [self.audioCaptureManager stopCapture];
 
@@ -353,6 +355,7 @@
 
 - (void)rustBridgeDidEncounterError:(NSString *)message {
     NSLog(@"[Koe] Session error: %@", message);
+    self.showingError = YES;
     [self.cuePlayer playError];
     [self.audioCaptureManager stopCapture];
     [self.hotkeyMonitor resetToIdle];
@@ -368,6 +371,7 @@
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (token != self.rustBridge.currentSessionToken) return;
+        self.showingError = NO;
         [self.statusBarManager updateState:@"idle"];
         [self.overlayPanel updateState:@"idle"];
     });
