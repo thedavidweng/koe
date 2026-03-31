@@ -423,7 +423,7 @@
 - (void)handleAudioCaptureError:(NSString *)reason {
     NSLog(@"[Koe] Audio capture error: %@", reason);
     [self.cuePlayer playError];
-    [self.rustBridge endSession];
+    [self.rustBridge cancelSession];
     [self.hotkeyMonitor resetToIdle];
     [self.statusBarManager updateState:@"error"];
     [self.overlayPanel updateState:@"error"];
