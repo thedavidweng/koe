@@ -74,8 +74,10 @@ class MLXAsrManager {
         generation &+= 1
         let thisGeneration = generation
 
+        callbackLock.lock()
         self.callback = callback
         self.callbackCtx = context
+        callbackLock.unlock()
 
         let preset: DelayPreset
         switch delayPreset {
