@@ -752,6 +752,7 @@ async fn run_session(
             llm_config.top_p,
             llm_config.max_output_tokens,
             llm_config.max_token_parameter,
+            llm_config.no_reasoning_control,
         );
 
         // Filter dictionary candidates for prompt
@@ -926,6 +927,7 @@ fn start_llm_warmup_if_needed(
             warmup_cfg.top_p,
             warmup_cfg.max_output_tokens,
             warmup_cfg.max_token_parameter,
+            warmup_cfg.no_reasoning_control,
         );
 
         let warmup_ok = match llm.warmup().await {
@@ -1130,6 +1132,7 @@ pub unsafe extern "C" fn sp_llm_test(
         timeout_ms: cfg.llm.timeout_ms,
         max_output_tokens: cfg.llm.max_output_tokens,
         dictionary_max_candidates: cfg.llm.dictionary_max_candidates,
+        no_reasoning_control: cfg.llm.no_reasoning_control,
         system_prompt_path: cfg.llm.system_prompt_path.clone(),
         user_prompt_path: cfg.llm.user_prompt_path.clone(),
     };

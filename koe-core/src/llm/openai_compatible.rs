@@ -1,4 +1,4 @@
-use crate::config::{LlmMaxTokenParameter, LlmSection};
+use crate::config::{LlmMaxTokenParameter, LlmNoReasoningControl, LlmSection};
 use crate::errors::{KoeError, Result};
 use crate::llm::{CorrectionRequest, LlmProvider};
 use reqwest::Client;
@@ -18,6 +18,7 @@ pub struct OpenAiCompatibleProvider {
     top_p: f64,
     max_output_tokens: u32,
     max_token_parameter: LlmMaxTokenParameter,
+    no_reasoning_control: LlmNoReasoningControl,
 }
 
 impl OpenAiCompatibleProvider {
@@ -31,6 +32,7 @@ impl OpenAiCompatibleProvider {
         top_p: f64,
         max_output_tokens: u32,
         max_token_parameter: LlmMaxTokenParameter,
+        no_reasoning_control: LlmNoReasoningControl,
     ) -> Self {
         Self {
             client,
@@ -41,6 +43,7 @@ impl OpenAiCompatibleProvider {
             top_p,
             max_output_tokens,
             max_token_parameter,
+            no_reasoning_control,
         }
     }
 
@@ -108,6 +111,7 @@ pub async fn test_correction(
         llm_config.top_p,
         llm_config.max_output_tokens,
         llm_config.max_token_parameter,
+        llm_config.no_reasoning_control,
     );
 
     let request = CorrectionRequest {
@@ -146,11 +150,19 @@ impl LlmProvider for OpenAiCompatibleProvider {
             LlmMaxTokenParameter::MaxCompletionTokens => "max_completion_tokens",
         };
         body[token_field_name] = json!(self.max_output_tokens);
-        if matches!(
-            self.max_token_parameter,
-            LlmMaxTokenParameter::MaxCompletionTokens
-        ) {
-            body["reasoning_effort"] = json!("none");
+        match self.no_reasoning_control {
+            LlmNoReasoningControl::ReasoningEffort => {
+                if matches!(
+                    self.max_token_parameter,
+                    LlmMaxTokenParameter::MaxCompletionTokens
+                ) {
+                    body["reasoning_effort"] = json!("none");
+                }
+            }
+            LlmNoReasoningControl::Thinking => {
+                body["thinking"] = json!({"type": "disabled"});
+            }
+            LlmNoReasoningControl::None => {}
         }
 
         log::debug!("LLM request to {url}");
