@@ -15,6 +15,7 @@ name = "koe"
 path = "src/main.rs"
 
 [dependencies]
+koe-asr = { path = "../koe-asr" }
 koe-core = { path = "../koe-core", default-features = false }
 clap = { workspace = true, features = ["derive"] }
 indicatif.workspace = true

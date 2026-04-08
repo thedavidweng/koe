@@ -3,7 +3,7 @@
 ARCH := aarch64-apple-darwin
 XCODE_ARCH := arm64
 
-build: generate build-rust build-xcode
+build: generate build-rust build-xcode install-cli
 
 build-lite: generate
 	cd KoeApp && xcodebuild -project Koe.xcodeproj -scheme Koe-lite -configuration Release ARCHS=arm64 build
@@ -16,9 +16,15 @@ generate:
 
 build-rust:
 	cargo build --manifest-path koe-core/Cargo.toml --release --target $(ARCH)
+	cargo build --package koe-cli --release --target $(ARCH)
 
 build-xcode:
 	cd KoeApp && xcodebuild -project Koe.xcodeproj -scheme Koe -configuration Release ARCHS=$(XCODE_ARCH) build
+
+install-cli:
+	@APP_DIR=$$(xcodebuild -project KoeApp/Koe.xcodeproj -scheme Koe -configuration Release -showBuildSettings 2>/dev/null | grep ' BUILD_DIR' | head -1 | awk '{print $$3}')/Release/Koe.app/Contents/MacOS; \
+	cp target/$(ARCH)/release/koe "$$APP_DIR/koe-cli"; \
+	echo "Installed koe-cli into $$APP_DIR"
 
 clean:
 	cargo clean

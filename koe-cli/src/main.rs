@@ -13,6 +13,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Transcribe an audio or video file to text
+    Transcribe {
+        /// Path to the audio or video file (any format supported by ffmpeg)
+        file: String,
+        /// Show interim (partial) results as they arrive
+        #[arg(long, short = 'i')]
+        interim: bool,
+        /// Path to DoubaoIME credentials file
+        #[arg(long)]
+        credentials: Option<String>,
+    },
     /// Manage local ASR models
     Model {
         #[command(subcommand)]
@@ -75,6 +86,11 @@ async fn main() {
     let _ = koe_core::config::ensure_defaults();
 
     let result = match cli.command {
+        Commands::Transcribe {
+            file,
+            interim,
+            credentials,
+        } => transcribe(&file, interim, credentials.as_deref()).await,
         Commands::Model { action } => match action {
             ModelCommands::List => list(),
             ModelCommands::Status { model, verify_mode } => status(&model, &verify_mode),
@@ -267,6 +283,150 @@ async fn pull(model: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// ─── Transcribe ─────────────────────────────────────────────────────
+
+async fn transcribe(
+    file: &str,
+    show_interim: bool,
+    credentials: Option<&str>,
+) -> Result<(), String> {
+    use koe_asr::{AsrConfig, AsrEvent, AsrProvider, DoubaoImeProvider, TranscriptAggregator};
+    use std::collections::HashMap;
+
+    let path = std::path::Path::new(file);
+    if !path.exists() {
+        return Err(format!("file not found: {file}"));
+    }
+
+    // Decode audio/video to raw PCM using ffmpeg
+    eprintln!("Decoding {file} ...");
+    let pcm_data = decode_to_pcm(file)?;
+    let duration_secs = pcm_data.len() as f64 / (16000.0 * 2.0); // 16kHz, 16-bit mono
+    eprintln!("Audio: {:.1}s, {} bytes PCM", duration_secs, pcm_data.len());
+
+    // Configure credentials path
+    let mut custom_headers = HashMap::new();
+    if let Some(cred_path) = credentials {
+        custom_headers.insert("credential_path".to_string(), cred_path.to_string());
+    }
+
+    let config = AsrConfig {
+        custom_headers,
+        ..Default::default()
+    };
+
+    let mut asr = DoubaoImeProvider::new();
+    eprintln!("Connecting to DoubaoIME ASR...");
+    asr.connect(&config)
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+
+    // Feed PCM in chunks (20ms frames = 640 bytes at 16kHz 16-bit mono)
+    // Send without delay (realtime=false equivalent) for faster processing.
+    const CHUNK_SIZE: usize = 640;
+    for chunk in pcm_data.chunks(CHUNK_SIZE) {
+        asr.send_audio(chunk)
+            .await
+            .map_err(|e| format!("send_audio: {e}"))?;
+    }
+
+    asr.finish_input()
+        .await
+        .map_err(|e| format!("finish_input: {e}"))?;
+
+    // Collect results
+    let mut aggregator = TranscriptAggregator::new();
+    loop {
+        match asr.next_event().await.map_err(|e| format!("event: {e}"))? {
+            AsrEvent::Interim(text) => {
+                aggregator.update_interim(&text);
+                if show_interim {
+                    eprint!("\r\x1b[2K[interim] {text}");
+                }
+            }
+            AsrEvent::Definite(text) => {
+                aggregator.update_definite(&text);
+                if show_interim {
+                    eprint!("\r\x1b[2K[definite] {text}");
+                }
+            }
+            AsrEvent::Final(text) => {
+                aggregator.update_final(&text);
+                if show_interim {
+                    eprintln!();
+                }
+                break;
+            }
+            AsrEvent::Error(msg) => {
+                if show_interim {
+                    eprintln!();
+                }
+                asr.close().await.ok();
+                return Err(format!("ASR error: {msg}"));
+            }
+            AsrEvent::Closed => {
+                if show_interim {
+                    eprintln!();
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    asr.close().await.ok();
+
+    let result = aggregator.best_text();
+    if result.is_empty() {
+        eprintln!("No speech detected.");
+    } else {
+        println!("{result}");
+    }
+
+    Ok(())
+}
+
+/// Decode an audio/video file to raw PCM (16kHz, mono, s16le) using ffmpeg.
+fn decode_to_pcm(file: &str) -> Result<Vec<u8>, String> {
+    let output = std::process::Command::new("ffmpeg")
+        .args([
+            "-i",
+            file,
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-v",
+            "error",
+            "pipe:1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "ffmpeg not found. Please install ffmpeg to decode audio/video files.".to_string()
+            } else {
+                format!("failed to run ffmpeg: {e}")
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg failed: {stderr}"));
+    }
+
+    if output.stdout.is_empty() {
+        return Err("ffmpeg produced no audio output".to_string());
+    }
+
+    Ok(output.stdout)
 }
 
 // ─── Manifest Generate ──────────────────────────────────────────────
