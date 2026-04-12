@@ -142,6 +142,10 @@ static BOOL configFlagEnabled(const char *keyPath) {
         if (strcmp(rawProvider, "apple-speech") == 0) {
             [self.permissionManager requestSpeechRecognitionPermissionWithCompletion:^(BOOL granted) {
                 NSLog(@"[Koe] Speech recognition permission: %@", granted ? @"granted" : @"denied");
+                if (!granted) {
+                    [self.permissionManager showPermissionAlertForType:SPPermissionTypeSpeechRecognition
+                                                          settingsURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"]];
+                }
             }];
         }
         sp_core_free_string(rawProvider);
@@ -155,11 +159,21 @@ static BOOL configFlagEnabled(const char *keyPath) {
         if (!micGranted) {
             NSLog(@"[Koe] ERROR: Microphone permission not granted");
             [self.cuePlayer playError];
+            [self.permissionManager showPermissionAlertForType:SPPermissionTypeMicrophone
+                                                  settingsURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"]];
             return;
+        }
+
+        if (!accessibilityGranted) {
+            NSLog(@"[Koe] WARNING: Accessibility permission not granted");
+            [self.permissionManager showPermissionAlertForType:SPPermissionTypeAccessibility
+                                                  settingsURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]];
         }
 
         if (!inputMonitoringGranted) {
             NSLog(@"[Koe] WARNING: Input Monitoring probe failed, will attempt hotkey monitor anyway");
+            [self.permissionManager showPermissionAlertForType:SPPermissionTypeInputMonitoring
+                                                  settingsURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"]];
         }
 
         // Start hotkey monitor (let it try CGEventTap directly — the probe may give false negatives)
