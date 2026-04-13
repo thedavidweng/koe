@@ -296,20 +296,6 @@ static NSDictionary<NSString *, NSString *> *comboModifierDisplayNames(void) {
     return displayNames;
 }
 
-static NSSet<NSString *> *llmInvertModifierValues(void) {
-    static NSSet<NSString *> *values;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        values = [NSSet setWithArray:@[@"control", @"option", @"command", @"shift", @"fn", @"none"]];
-    });
-    return values;
-}
-
-static NSString *normalizedLlmInvertModifierValue(NSString *value) {
-    NSString *trimmedValue = [[value ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-    return [llmInvertModifierValues() containsObject:trimmedValue] ? trimmedValue : @"control";
-}
-
 static NSString *normalizedHotkeyComboValue(NSString *value) {
     if (![value containsString:@"+"]) return nil;
 
@@ -526,7 +512,6 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
 @property (nonatomic, copy) NSString *recordingHotkeyTarget;
 // Trigger mode
 @property (nonatomic, strong) NSPopUpButton *triggerModePopup;
-@property (nonatomic, strong) NSPopUpButton *llmInvertModifierPopup;
 @property (nonatomic, strong) NSSwitch *startSoundCheckbox;
 @property (nonatomic, strong) NSSwitch *stopSoundCheckbox;
 @property (nonatomic, strong) NSSwitch *errorSoundCheckbox;
@@ -1405,13 +1390,10 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
     [self.triggerModePopup itemAtIndex:0].representedObject = @"hold";
     [self.triggerModePopup itemAtIndex:1].representedObject = @"toggle";
 
-    self.llmInvertModifierPopup = [self llmInvertModifierPopupControl];
-
     // ── Trigger card ──
     NSView *triggerCard = [self cardWithTitle:@"Trigger" rows:@[
         [self cardRowWithLabel:@"Trigger Shortcut" control:triggerShortcutControl],
         [self cardRowWithLabel:@"Trigger Mode" control:self.triggerModePopup],
-        [self cardRowWithLabel:@"LLM Modifier" control:self.llmInvertModifierPopup],
     ] width:cardWidth];
 
     // ── Feedback Sounds ──
@@ -1451,17 +1433,6 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
     [self addButtonsToPane:pane atY:16 width:paneWidth];
 
     return pane;
-}
-
-- (NSPopUpButton *)llmInvertModifierPopupControl {
-    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 220, 26) pullsDown:NO];
-    NSArray<NSString *> *titles = @[@"Control", @"Option", @"Command", @"Shift", @"Fn", @"None"];
-    NSArray<NSString *> *values = @[@"control", @"option", @"command", @"shift", @"fn", @"none"];
-    [popup addItemsWithTitles:titles];
-    for (NSInteger idx = 0; idx < (NSInteger)values.count; idx++) {
-        [popup itemAtIndex:idx].representedObject = values[idx];
-    }
-    return popup;
 }
 
 - (NSPopUpButton *)hotkeyPresetPopup {
@@ -1556,17 +1527,6 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
     }
 
     [popup selectItemAtIndex:0];
-}
-
-- (void)selectLlmInvertModifierValue:(NSString *)value {
-    NSString *normalizedValue = normalizedLlmInvertModifierValue(value);
-    for (NSMenuItem *item in self.llmInvertModifierPopup.itemArray) {
-        if ([[item.representedObject description] isEqualToString:normalizedValue]) {
-            [self.llmInvertModifierPopup selectItem:item];
-            return;
-        }
-    }
-    [self.llmInvertModifierPopup selectItemAtIndex:0];
 }
 
 - (void)triggerHotkeyChanged:(id)sender {
@@ -3722,8 +3682,6 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType, const char 
         } else {
             [self.triggerModePopup selectItemAtIndex:0];
         }
-        [self selectLlmInvertModifierValue:configGet(@"hotkey.llm_invert_modifier")];
-
         NSString *startSound = configGet(@"feedback.start_sound");
         NSString *stopSound = configGet(@"feedback.stop_sound");
         NSString *errorSound = configGet(@"feedback.error_sound");
@@ -3905,8 +3863,6 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType, const char 
         // Save trigger mode
         NSString *triggerModeValue = [self.triggerModePopup selectedItem].representedObject ?: @"hold";
         saveOk &= configSet(@"hotkey.trigger_mode", triggerModeValue);
-        NSString *llmInvertModifierValue = normalizedLlmInvertModifierValue(self.llmInvertModifierPopup.selectedItem.representedObject ?: @"control");
-        saveOk &= configSet(@"hotkey.llm_invert_modifier", llmInvertModifierValue);
     }
     if (self.overlayFontSizeSlider) {
         NSString *fontFamily = [self selectedOverlayFontFamilyValue];
