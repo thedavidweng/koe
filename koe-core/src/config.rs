@@ -2124,4 +2124,58 @@ mod tests {
         unsafe { std::env::remove_var("KOE_TEST_HOST") };
         unsafe { std::env::remove_var("KOE_TEST_PORT") };
     }
+
+    // This test must be serial (mutates HOME) — kept in the same module so
+    // Rust's test runner serialises it with the other HOME-mutating test above
+    // when run with --test-threads=1; run individually it is always safe.
+    #[test]
+    fn config_bool_round_trip_and_isolation() {
+        let orig_home = std::env::var("HOME").unwrap();
+
+        let tmp = std::env::temp_dir().join(format!(
+            "koe-test-bool-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let koe_dir = tmp.join(".koe");
+        fs::create_dir_all(&koe_dir).unwrap();
+        fs::write(koe_dir.join("config.yaml"), "").unwrap();
+
+        unsafe { std::env::set_var("HOME", &tmp) };
+
+        // Write two bool keys.
+        config_set("asr.doubao.enable_accelerate_text", "true").unwrap();
+        config_set("llm.prompt_templates_enabled", "true").unwrap();
+
+        // Both round-trip as the exact string "true".
+        assert_eq!(
+            config_get("asr.doubao.enable_accelerate_text").unwrap(),
+            "true",
+            "asr.doubao.enable_accelerate_text should be \"true\""
+        );
+        assert_eq!(
+            config_get("llm.prompt_templates_enabled").unwrap(),
+            "true",
+            "llm.prompt_templates_enabled should be \"true\""
+        );
+
+        // Setting an unrelated third key must not clobber the first two.
+        config_set("asr.provider", "doubao").unwrap();
+
+        assert_eq!(
+            config_get("asr.doubao.enable_accelerate_text").unwrap(),
+            "true",
+            "asr.doubao.enable_accelerate_text should still be \"true\" after sibling write"
+        );
+        assert_eq!(
+            config_get("llm.prompt_templates_enabled").unwrap(),
+            "true",
+            "llm.prompt_templates_enabled should still be \"true\" after sibling write"
+        );
+
+        unsafe { std::env::set_var("HOME", &orig_home) };
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
