@@ -675,7 +675,7 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
 @property(nonatomic, strong) NSPopUpButton *appleSpeechLocalePopup;
 
 // LLM fields
-@property(nonatomic, strong) NSButton *llmEnabledCheckbox;
+@property(nonatomic, strong) NSSwitch *llmEnabledCheckbox;
 @property(nonatomic, strong) NSTableView *llmProfileTableView;
 @property(nonatomic, strong) NSScrollView *llmProfileTableScroll;
 @property(nonatomic, strong) NSButton *llmAddProfileButton;
