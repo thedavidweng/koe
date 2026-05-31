@@ -1164,18 +1164,27 @@ pub fn resolve_user_prompt_path(config: &Config) -> PathBuf {
 // ─── Environment Variable Substitution ──────────────────────────────
 
 /// Replace ${VAR_NAME} patterns with environment variable values.
+///
+/// Performs a single, non-recursive pass: each `${VAR}` token in the
+/// *original* input is replaced exactly once.  Substituted values are
+/// appended verbatim and never re-scanned, which prevents:
+/// - infinite loops when a value contains `${...}` (including self-references)
+/// - silent corruption of API keys or paths that happen to contain `${`
 fn substitute_env_vars(input: &str) -> String {
-    let mut result = input.to_string();
-    // Simple regex-free approach
-    while let Some(start) = result.find("${") {
-        let end = match result[start + 2..].find('}') {
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        let end = match rest[start + 2..].find('}') {
             Some(pos) => start + 2 + pos,
-            None => break,
+            None => break, // no closing brace; copy remainder verbatim below
         };
-        let var_name = &result[start + 2..end];
+        let var_name = &rest[start + 2..end];
         let value = std::env::var(var_name).unwrap_or_default();
-        result = format!("{}{}{}", &result[..start], value, &result[end + 1..]);
+        result.push_str(&rest[..start]);
+        result.push_str(&value); // value is NOT rescanned
+        rest = &rest[end + 1..];
     }
+    result.push_str(rest);
     result
 }
 
@@ -2058,5 +2067,61 @@ mod tests {
         let content = fs::read_to_string(koe_dir2.join("config.yaml")).unwrap();
         assert!(content.contains("enabled: true"));
         let _ = fs::remove_dir_all(&tmp2);
+    }
+
+    // ─── substitute_env_vars tests ────────────────────────────────────
+
+    #[test]
+    fn substitute_env_vars_replaces_known_var() {
+        unsafe { std::env::set_var("KOE_TEST_API_KEY", "sk-test-123") };
+        let result = substitute_env_vars("api_key: ${KOE_TEST_API_KEY}");
+        assert_eq!(result, "api_key: sk-test-123");
+        unsafe { std::env::remove_var("KOE_TEST_API_KEY") };
+    }
+
+    #[test]
+    fn substitute_env_vars_no_rescan_prevents_infinite_loop() {
+        // If the value itself contains "${...}", it must NOT be re-expanded.
+        unsafe { std::env::set_var("KOE_TEST_SELF_REF", "${KOE_TEST_SELF_REF}") };
+        // Should return quickly and produce the literal value, not loop forever.
+        let result = substitute_env_vars("key: ${KOE_TEST_SELF_REF}");
+        assert_eq!(result, "key: ${KOE_TEST_SELF_REF}");
+        unsafe { std::env::remove_var("KOE_TEST_SELF_REF") };
+    }
+
+    #[test]
+    fn substitute_env_vars_value_with_dollar_brace_not_re_expanded() {
+        // A value that contains a different ${VAR} reference must not be resolved.
+        unsafe { std::env::set_var("KOE_TEST_INNER", "hello") };
+        unsafe { std::env::set_var("KOE_TEST_OUTER", "${KOE_TEST_INNER}") };
+        let result = substitute_env_vars("v: ${KOE_TEST_OUTER}");
+        // Should equal the literal value of OUTER, not the expanded inner.
+        assert_eq!(result, "v: ${KOE_TEST_INNER}");
+        unsafe { std::env::remove_var("KOE_TEST_INNER") };
+        unsafe { std::env::remove_var("KOE_TEST_OUTER") };
+    }
+
+    #[test]
+    fn substitute_env_vars_missing_var_becomes_empty() {
+        // Ensure an unset var is replaced with ""
+        unsafe { std::env::remove_var("KOE_TEST_MISSING_VAR_XYZ") };
+        let result = substitute_env_vars("key: ${KOE_TEST_MISSING_VAR_XYZ}");
+        assert_eq!(result, "key: ");
+    }
+
+    #[test]
+    fn substitute_env_vars_no_closing_brace_left_verbatim() {
+        let result = substitute_env_vars("key: ${UNCLOSED");
+        assert_eq!(result, "key: ${UNCLOSED");
+    }
+
+    #[test]
+    fn substitute_env_vars_multiple_vars_in_one_string() {
+        unsafe { std::env::set_var("KOE_TEST_HOST", "localhost") };
+        unsafe { std::env::set_var("KOE_TEST_PORT", "8080") };
+        let result = substitute_env_vars("url: http://${KOE_TEST_HOST}:${KOE_TEST_PORT}/v1");
+        assert_eq!(result, "url: http://localhost:8080/v1");
+        unsafe { std::env::remove_var("KOE_TEST_HOST") };
+        unsafe { std::env::remove_var("KOE_TEST_PORT") };
     }
 }

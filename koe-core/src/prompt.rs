@@ -132,7 +132,15 @@ pub fn looks_like_degenerate_rewrite(
             .count();
         // Absolute floor (so short, legitimately term-heavy rewrites pass) AND
         // half the candidate list (so a large dictionary doesn't lower the bar).
-        let dump_threshold = (dictionary_entries.len() / 2).max(8);
+        // Use a lower floor for small candidate lists (e.g. when
+        // dictionary_max_candidates is set to a small value) so that a partial
+        // dump of a short filtered list is still detected.
+        let half = dictionary_entries.len() / 2;
+        let dump_threshold = if dictionary_entries.len() < 12 {
+            half.max(4)
+        } else {
+            half.max(8)
+        };
         if leaked >= dump_threshold {
             return true;
         }
