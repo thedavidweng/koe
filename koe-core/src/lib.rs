@@ -811,6 +811,15 @@ pub unsafe extern "C" fn sp_core_rewrite_with_template(
 
     drop(global); // Release lock before spawning
 
+    // Trim-aware empty guard: a whitespace-only input carries no content, and
+    // feeding it to the LLM makes the model regurgitate the prompt's dictionary
+    // section instead of rewriting. Echo the original back and skip the call.
+    if asr_text.trim().is_empty() {
+        log::info!("sp_core_rewrite_with_template: empty ASR text, skipping LLM");
+        invoke_rewrite_text_ready(session_token, &asr_text);
+        return 0;
+    }
+
     runtime_handle.spawn(async move {
         log::info!(
             "rewrite: using template '{}' with {} chars of ASR text",
@@ -1120,9 +1129,12 @@ async fn run_session(
     }
 
     let asr_text = aggregator.best_text().to_string();
-    if asr_text.is_empty() {
+    if asr_text.trim().is_empty() {
         // A silent recording is a valid no-op, not a user-visible failure.
         // Exit quietly so the app returns to idle without error sounds or alerts.
+        // NOTE: must be trim-aware — a whitespace-only ASR result is non-empty
+        // but carries no content, and feeding it to the LLM makes the model
+        // regurgitate the prompt's dictionary section instead of producing text.
         log::info!(
             "[{session_id}] no ASR text available: treating silent recording as empty result"
         );
