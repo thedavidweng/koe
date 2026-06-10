@@ -44,7 +44,7 @@ pub struct PromptTemplate {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AsrSection {
-    /// Which ASR provider to use: "doubaoime" (default), "doubao", "qwen", "glm", "mlx", "sherpa-onnx", "apple-speech"
+    /// Which ASR provider to use: "doubaoime" (default), "doubao", "qwen", "glm", "mimo", "mlx", "sherpa-onnx", "apple-speech"
     #[serde(default = "default_asr_provider")]
     pub provider: String,
 
@@ -75,6 +75,10 @@ pub struct AsrSection {
     /// GLM (Zhipu) ASR configuration
     #[serde(default)]
     pub glm: GlmAsrConfig,
+
+    /// MiMo (Xiaomi) ASR configuration
+    #[serde(default)]
+    pub mimo: MimoAsrConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -275,6 +279,36 @@ impl Default for GlmAsrConfig {
             api_key: String::new(),
             model: default_glm_model(),
             prompt: None,
+            connect_timeout_ms: default_connect_timeout(),
+            final_wait_timeout_ms: default_final_wait_timeout(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MimoAsrConfig {
+    #[serde(default = "default_mimo_url")]
+    pub url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_mimo_model")]
+    pub model: String,
+    /// Language code: "auto" (default), "zh-CN", "en-US", etc.
+    #[serde(default = "default_mimo_language")]
+    pub language: String,
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_final_wait_timeout")]
+    pub final_wait_timeout_ms: u64,
+}
+
+impl Default for MimoAsrConfig {
+    fn default() -> Self {
+        Self {
+            url: default_mimo_url(),
+            api_key: String::new(),
+            model: default_mimo_model(),
+            language: default_mimo_language(),
             connect_timeout_ms: default_connect_timeout(),
             final_wait_timeout_ms: default_final_wait_timeout(),
         }
@@ -780,7 +814,18 @@ fn default_glm_url() -> String {
 fn default_glm_model() -> String {
     "glm-asr-2512".into()
 }
-fn deserialize_option_u32_lenient<'de, D>(deserializer: D) -> std::result::Result<Option<u32>, D::Error>
+fn default_mimo_url() -> String {
+    "https://api.xiaomimimo.com/v1/chat/completions".into()
+}
+fn default_mimo_model() -> String {
+    "mimo-v2.5-asr".into()
+}
+fn default_mimo_language() -> String {
+    "auto".into()
+}
+fn deserialize_option_u32_lenient<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -799,7 +844,9 @@ where
     }
 }
 
-fn deserialize_option_string_lenient<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+fn deserialize_option_string_lenient<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -1600,7 +1647,7 @@ const DEFAULT_CONFIG_YAML: &str = r#"# Koe - Voice Input Tool Configuration
 # ~/.koe/config.yaml
 
 asr:
-  # ASR provider: "doubaoime" (default, free), "doubao", "qwen", "glm", "apple-speech", "mlx", "sherpa-onnx"
+  # ASR provider: "doubaoime" (default, free), "doubao", "qwen", "glm", "mimo", "apple-speech", "mlx", "sherpa-onnx"
   provider: "doubaoime"
 
   # DoubaoIME (豆包输入法) free ASR — no API key required, auto device registration
@@ -1648,6 +1695,13 @@ asr:
     url: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
     api_key: ""          # 从 https://bigmodel.cn/usercenter/proj-mgmt/apikeys 获取
     model: "glm-asr-2512"  # glm-asr-2512 | glm-asr-1
+
+  # MiMo (Xiaomi/小米) ASR — OpenAI-compatible HTTP POST + SSE streaming
+  mimo:
+    url: "https://api.xiaomimimo.com/v1/chat/completions"
+    api_key: ""          # 从 https://platform.xiaomimimo.com 获取
+    model: "mimo-v2.5-asr"
+    language: "auto"     # auto | zh-CN | en-US | ja-JP 等
 
   # Apple Speech local ASR (macOS 26+, zero-config, no model download)
   apple-speech:
