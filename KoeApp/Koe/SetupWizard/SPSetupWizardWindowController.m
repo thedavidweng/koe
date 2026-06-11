@@ -1286,6 +1286,20 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
   mimoKeyLabel.tag = 1011;
   mimoKeyLabel.hidden = YES;
   [pane addSubview:mimoKeyLabel];
+  // Privacy notice — audio is sent to Xiaomi's servers, not ours.
+  NSTextField *mimoPrivacyNotice = [NSTextField wrappingLabelWithString:
+      @"By selecting a Xiaomi (MiMo) model, you voluntarily consent to "
+      @"Xiaomi collecting your personal information and voice data. Koe "
+      @"collects nothing and runs no servers. For any questions, please "
+      @"contact the Xiaomi team."];
+  // Sits one row below the API key field, clear of the test result label.
+  mimoPrivacyNotice.frame =
+      NSMakeRect(fieldX, mimoY - rowH * 2 - 50, paneWidth - fieldX - 32, 44);
+  mimoPrivacyNotice.font = [NSFont systemFontOfSize:11];
+  mimoPrivacyNotice.textColor = [NSColor systemOrangeColor];
+  mimoPrivacyNotice.tag = 1011;
+  mimoPrivacyNotice.hidden = YES;
+  [pane addSubview:mimoPrivacyNotice];
 
   // Test result label — positioned right after credential rows, before
   // language.
@@ -3935,7 +3949,8 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
     return 340.0;
   }
   if ([provider isEqualToString:@"mimo"]) {
-    return 340.0;
+    // Taller than GLM to fit the privacy notice under the API key row.
+    return 360.0;
   }
   if ([provider isEqualToString:@"apple-speech"]) {
     return 280.0;
