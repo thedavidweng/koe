@@ -33,11 +33,37 @@ static const UInt32 kBufferFrames = 800; // 50ms at 16kHz
 @property (nonatomic, assign) BOOL waitingForFirstCallback;
 @property (nonatomic, assign) BOOL waitingForFirstFrame;
 
+// Output muting during recording: silence other apps' playback so it neither
+// distracts the speaker nor bleeds into the mic. Restored on stop/shutdown.
+@property (nonatomic, assign) BOOL didMuteOutput;
+@property (nonatomic, assign) AudioObjectID mutedOutputDevice;
+
 - (BOOL)startPreparedQueue;
 - (void)stopAndReprepare;
 - (void)disposeQueue;
+- (void)muteSystemOutput;
+- (void)restoreSystemOutput;
 
 @end
+
+// ---------------------------------------------------------------------------
+// System output muting — silence other playback while recording
+// ---------------------------------------------------------------------------
+
+static AudioObjectID koeDefaultOutputDevice(void) {
+    AudioObjectID device = kAudioObjectUnknown;
+    UInt32 size = sizeof(device);
+    AudioObjectPropertyAddress addr = {
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL,
+                                   &size, &device) != noErr) {
+        return kAudioObjectUnknown;
+    }
+    return device;
+}
 
 static double elapsedMillisecondsSince(uint64_t startedAt) {
     if (startedAt == 0) return 0;
@@ -149,6 +175,9 @@ static void queueInputCallback(void *userData,
         _preRollBuffer = [NSMutableData data];
         _pendingDeviceID = kAudioObjectUnknown;
         _preparedDeviceID = kAudioObjectUnknown;
+        _muteOutputEnabled = NO;
+        _didMuteOutput = NO;
+        _mutedOutputDevice = kAudioObjectUnknown;
     }
     return self;
 }
@@ -327,12 +356,20 @@ static void queueInputCallback(void *userData,
         return NO;
     }
 
+    if (self.muteOutputEnabled) {
+        [self muteSystemOutput];
+    }
+
     NSLog(@"[Koe] Audio capture armed");
     return YES;
 }
 
 - (void)stopCapture {
-    if (!self.isCapturing) return;
+    if (!self.isCapturing) {
+        // Still restore in case mute was left on after a partial failure.
+        [self restoreSystemOutput];
+        return;
+    }
 
     @synchronized (self.accumBuffer) {
         self.isCapturing = NO;
@@ -352,6 +389,7 @@ static void queueInputCallback(void *userData,
         [self.preRollBuffer setLength:0];
     }
 
+    [self restoreSystemOutput];
     [self stopAndReprepare];
     NSLog(@"[Koe] Audio capture stopped");
 }
@@ -382,8 +420,68 @@ static void queueInputCallback(void *userData,
 }
 
 - (void)shutdown {
+    [self restoreSystemOutput];
     [self disposeQueue];
     NSLog(@"[Koe] Audio queue shut down");
+}
+
+- (void)restoreMutedSystemOutputIfNeeded {
+    [self restoreSystemOutput];
+}
+
+#pragma mark - System Output Muting
+
+// Mute the current default output device so other apps' audio is silenced for
+// the duration of the recording. The device we mute is remembered so we restore
+// exactly that one even if the default route changes mid-session. If the device
+// was already muted by the user, we leave it untouched and skip the restore.
+- (void)muteSystemOutput {
+    self.didMuteOutput = NO;
+    self.mutedOutputDevice = kAudioObjectUnknown;
+
+    AudioObjectID device = koeDefaultOutputDevice();
+    if (device == kAudioObjectUnknown) return;
+
+    AudioObjectPropertyAddress addr = {
+        kAudioDevicePropertyMute,
+        kAudioDevicePropertyScopeOutput,
+        kAudioObjectPropertyElementMain
+    };
+    if (!AudioObjectHasProperty(device, &addr)) {
+        NSLog(@"[Koe] Default output device has no master mute; skipping output mute");
+        return;
+    }
+
+    UInt32 muted = 0;
+    UInt32 size = sizeof(muted);
+    if (AudioObjectGetPropertyData(device, &addr, 0, NULL, &size, &muted) != noErr) return;
+    if (muted) return; // already muted by the user — don't touch, don't restore
+
+    UInt32 on = 1;
+    if (AudioObjectSetPropertyData(device, &addr, 0, NULL, sizeof(on), &on) == noErr) {
+        self.mutedOutputDevice = device;
+        self.didMuteOutput = YES;
+        NSLog(@"[Koe] Muted system output during recording (device %u)", (unsigned)device);
+    }
+}
+
+- (void)restoreSystemOutput {
+    if (!self.didMuteOutput) return;
+    self.didMuteOutput = NO;
+
+    AudioObjectID device = self.mutedOutputDevice;
+    self.mutedOutputDevice = kAudioObjectUnknown;
+    if (device == kAudioObjectUnknown) return;
+
+    AudioObjectPropertyAddress addr = {
+        kAudioDevicePropertyMute,
+        kAudioDevicePropertyScopeOutput,
+        kAudioObjectPropertyElementMain
+    };
+    UInt32 off = 0;
+    if (AudioObjectSetPropertyData(device, &addr, 0, NULL, sizeof(off), &off) == noErr) {
+        NSLog(@"[Koe] Restored system output after recording");
+    }
 }
 
 - (void)logActivationMilestone:(NSString *)milestone {

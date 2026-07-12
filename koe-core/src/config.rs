@@ -493,6 +493,9 @@ pub struct FeedbackSection {
     pub stop_sound: bool,
     #[serde(default)]
     pub error_sound: bool,
+    /// Mute system audio output for the duration of a recording (opt-in, default off).
+    #[serde(default)]
+    pub mute_system_output: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1760,6 +1763,7 @@ feedback:
   start_sound: false
   stop_sound: false
   error_sound: false
+  mute_system_output: false
 
 dictionary:
   path: "dictionary.txt"  # relative to ~/.koe/

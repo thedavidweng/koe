@@ -4,6 +4,10 @@ All notable user-facing changes to Koe are documented here.
 
 ## Unreleased
 
+### Added
+
+- Added an optional setting to mute system audio while recording (off by default). When enabled, other apps' playback is silenced for the duration of the capture so it neither distracts the speaker nor bleeds into the microphone. The exact device is restored on stop (including app quit while recording), and a device the user had already muted is left untouched.
+
 ### Changed
 
 - Start prepared microphone hardware on the initial trigger-down and retain a
