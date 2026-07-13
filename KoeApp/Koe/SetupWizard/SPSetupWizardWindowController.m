@@ -2029,7 +2029,7 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
   [self.triggerModePopup addItemsWithTitles:@[
     @"Hold (Press & Hold)",
     @"Toggle (Tap to Start/Stop)",
-    @"Double Tap to Start, Single Tap to Stop",
+    @"DoubleTap",
   ]];
   [self.triggerModePopup itemAtIndex:0].representedObject = @"hold";
   [self.triggerModePopup itemAtIndex:1].representedObject = @"toggle";
