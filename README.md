@@ -63,35 +63,28 @@ You can also download the latest release directly from GitHub:
 
 ### App Updates
 
-Koe can check a JSON update feed hosted directly in this repository. The app reads
-the raw GitHub URL below and compares the published version with the running build:
+Koe updates itself in-app via [Sparkle](https://sparkle-project.org/). Each build
+variant checks its own appcast feed hosted in this repository:
 
-- `APP_UPDATE_FEED_URL`: `https://raw.githubusercontent.com/missuo/koe/main/docs/update-feed.json`
+- **Koe** (standard): `https://raw.githubusercontent.com/missuo/koe/main/docs/appcast.xml`
+- **Koe MLX**: `https://raw.githubusercontent.com/missuo/koe/main/docs/appcast-mlx.xml`
 
-The feed file lives at `docs/update-feed.json` and should contain at least:
+Updates are checked automatically every 6 hours (and on demand from the menu bar
+with `Check for Updates...`). When a new version is available, Sparkle downloads
+the signed, notarized zip, verifies its EdDSA signature against the public key
+embedded in the app, and installs it in place — no browser round-trip.
 
-```json
-{
-  "version": "1.0.14",
-  "build": 15,
-  "minimum_system_version": "14.0",
-  "download_url": "https://github.com/missuo/koe/releases/download/v1.0.14/Koe-macOS-arm64.zip"
-}
-```
-
-Optional fields such as `minimum_system_version`, `release_notes_url`, `published_at`,
-and `notes` can also be included. On launch, Koe checks this raw feed automatically,
-checks again periodically, and you can also trigger a manual check from the menu bar
-with `Check for Updates...`. The current implementation performs the first automatic
-check shortly after launch and then re-checks every 6 hours. When an update is found,
-Koe opens the release download URL instead of patching the installed app in place.
+The appcasts (and the legacy `docs/update-feed.json` used by pre-Sparkle builds)
+are updated automatically by the release workflow on every tagged release; they
+are not edited by hand. See [docs/release-signing.md](docs/release-signing.md)
+for the full release pipeline.
 
 ### Build from Source
 
 #### Prerequisites
 
 - macOS 14.0+
-- Apple Silicon or Intel Mac
+- Apple Silicon Mac
 - Rust toolchain (`rustup`)
 - Xcode with command line tools
 - [xcodegen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
