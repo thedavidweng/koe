@@ -1,8 +1,10 @@
+mod benchmark;
+
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use koe_core::model_manager;
+use koe_core::{asr_factory, model_manager};
 
 #[derive(Parser)]
 #[command(name = "koe", about = "Koe voice input tool CLI")]
@@ -23,6 +25,25 @@ enum Commands {
         /// Path to DoubaoIME credentials file
         #[arg(long)]
         credentials: Option<String>,
+        /// ASR provider to use (default: the provider from ~/.koe/config.yaml)
+        #[arg(long, short = 'p')]
+        provider: Option<String>,
+    },
+    /// Benchmark ASR providers over a corpus of audio files with references.
+    ///
+    /// The corpus directory holds audio files (any ffmpeg-supported format),
+    /// each with a sibling .txt file of the same stem containing the
+    /// reference transcript.
+    Benchmark {
+        /// Directory containing audio files + .txt reference transcripts
+        corpus_dir: String,
+        /// Comma-separated provider names, or "all" for every provider
+        /// available in this build (default: the configured provider)
+        #[arg(long)]
+        providers: Option<String>,
+        /// Emit JSON instead of Markdown
+        #[arg(long)]
+        json: bool,
     },
     /// Manage local ASR models
     Model {
@@ -90,7 +111,13 @@ async fn main() {
             file,
             interim,
             credentials,
-        } => transcribe(&file, interim, credentials.as_deref()).await,
+            provider,
+        } => transcribe(&file, interim, credentials.as_deref(), provider.as_deref()).await,
+        Commands::Benchmark {
+            corpus_dir,
+            providers,
+            json,
+        } => run_benchmark(&corpus_dir, providers.as_deref(), json).await,
         Commands::Model { action } => match action {
             ModelCommands::List => list(),
             ModelCommands::Status { model, verify_mode } => status(&model, &verify_mode),
@@ -287,13 +314,28 @@ async fn pull(model: &str) -> Result<(), String> {
 
 // ─── Transcribe ─────────────────────────────────────────────────────
 
+/// Resolve a provider-name argument against what this build supports.
+/// `None` falls back to the provider configured in ~/.koe/config.yaml.
+fn resolve_provider(cfg: &koe_core::config::Config, requested: Option<&str>) -> Result<String, String> {
+    let name = requested.unwrap_or(&cfg.asr.provider).to_string();
+    let supported = asr_factory::supported_providers();
+    if supported.contains(&name.as_str()) {
+        Ok(name)
+    } else {
+        Err(format!(
+            "unsupported provider '{name}' (available in this build: {})",
+            supported.join(", ")
+        ))
+    }
+}
+
 async fn transcribe(
     file: &str,
     show_interim: bool,
     credentials: Option<&str>,
+    provider: Option<&str>,
 ) -> Result<(), String> {
-    use koe_asr::{AsrConfig, AsrEvent, AsrProvider, DoubaoImeProvider, TranscriptAggregator};
-    use std::collections::HashMap;
+    use koe_asr::{AsrEvent, TranscriptAggregator};
 
     let path = std::path::Path::new(file);
     if !path.exists() {
@@ -306,20 +348,18 @@ async fn transcribe(
     let duration_secs = pcm_data.len() as f64 / (16000.0 * 2.0); // 16kHz, 16-bit mono
     eprintln!("Audio: {:.1}s, {} bytes PCM", duration_secs, pcm_data.len());
 
-    // Configure credentials path
-    let mut custom_headers = HashMap::new();
+    let cfg = koe_core::config::load_config().map_err(|e| format!("load config: {e}"))?;
+    let provider_name = resolve_provider(&cfg, provider)?;
+    let (mut config, mut asr) = asr_factory::create_asr_provider(&cfg, &provider_name, &[]);
+
+    // --credentials overrides the DoubaoIME credential path from config
     if let Some(cred_path) = credentials {
-        custom_headers.insert("credential_path".to_string(), cred_path.to_string());
+        config
+            .custom_headers
+            .insert("credential_path".to_string(), cred_path.to_string());
     }
 
-    let config = AsrConfig {
-        custom_headers,
-        language: None,
-        ..Default::default()
-    };
-
-    let mut asr = DoubaoImeProvider::new();
-    eprintln!("Connecting to DoubaoIME ASR...");
+    eprintln!("Connecting to {provider_name} ASR...");
     asr.connect(&config)
         .await
         .map_err(|e| format!("connect: {e}"))?;
@@ -384,6 +424,75 @@ async fn transcribe(
         eprintln!("No speech detected.");
     } else {
         println!("{result}");
+    }
+
+    Ok(())
+}
+
+// ─── Benchmark ──────────────────────────────────────────────────────
+
+async fn run_benchmark(
+    corpus_dir: &str,
+    providers: Option<&str>,
+    json: bool,
+) -> Result<(), String> {
+    let cfg = koe_core::config::load_config().map_err(|e| format!("load config: {e}"))?;
+
+    let provider_names: Vec<String> = match providers {
+        None => vec![resolve_provider(&cfg, None)?],
+        Some("all") => asr_factory::supported_providers()
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        Some(list) => list
+            .split(',')
+            .map(|name| resolve_provider(&cfg, Some(name.trim())).map(|_| name.trim().to_string()))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+
+    let corpus = benchmark::load_corpus(std::path::Path::new(corpus_dir))?;
+    eprintln!(
+        "Benchmarking {} provider(s) over {} file(s)",
+        provider_names.len(),
+        corpus.len()
+    );
+
+    // Decode every file once; all providers consume the same PCM.
+    let mut pcm_cache = Vec::with_capacity(corpus.len());
+    for entry in &corpus {
+        let file = entry.audio.to_string_lossy().to_string();
+        eprintln!("Decoding {file} ...");
+        let pcm = decode_to_pcm(&file)?;
+        let audio_secs = pcm.len() as f64 / (16000.0 * 2.0);
+        pcm_cache.push((audio_secs, pcm));
+    }
+
+    let mut reports = Vec::new();
+    for name in &provider_names {
+        eprintln!("Provider: {name}");
+        reports.push(benchmark::run_provider(&cfg, name, &corpus, &pcm_cache).await);
+    }
+
+    if json {
+        let value: Vec<serde_json::Value> = reports
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "provider": r.provider,
+                    "overall_error_rate": r.overall_error_rate(),
+                    "mean_finalize_ms": r.mean_finalize_ms(),
+                    "mean_rtf": r.mean_rtf(),
+                    "files": r.files,
+                    "errors": r.errors,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|e| format!("json: {e}"))?
+        );
+    } else {
+        println!("{}", benchmark::render_markdown(&reports));
     }
 
     Ok(())
