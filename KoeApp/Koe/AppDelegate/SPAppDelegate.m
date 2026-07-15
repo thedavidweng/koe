@@ -580,8 +580,12 @@ static BOOL configFlagEnabled(const char *keyPath) {
     NSLog(@"[Koe] Accessibility granted: %@", accessOK ? @"YES" : @"NO");
 
     if (accessOK) {
+        BOOL autoReturn = configFlagEnabled("paste.auto_return");
         [self.pasteManager simulatePasteWithCompletion:^{
             NSLog(@"[Koe] Paste completion callback fired");
+            if (autoReturn) {
+                [self.pasteManager simulateReturnKey];
+            }
             [self.clipboardRestorePolicy scheduleRestoreForCurrentSession];
             if (token != self.rustBridge.currentSessionToken) return;
             [self.statusBarManager updateState:@"idle"];

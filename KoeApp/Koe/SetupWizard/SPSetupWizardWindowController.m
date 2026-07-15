@@ -767,6 +767,8 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
 @property(nonatomic, strong) NSSwitch *stopSoundCheckbox;
 @property(nonatomic, strong) NSSwitch *errorSoundCheckbox;
 @property(nonatomic, strong) NSSwitch *muteSystemOutputCheckbox;
+// Paste behavior
+@property(nonatomic, strong) NSSwitch *autoReturnSwitch;
 
 // Overlay
 @property(nonatomic, strong) NSPopUpButton *overlayFontFamilyPopup;
@@ -2141,6 +2143,17 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
                      ]
                     width:cardWidth];
 
+  // ── Paste Behavior ──
+  self.autoReturnSwitch = [self settingsSwitchWithAction:NULL];
+
+  NSView *pasteCard =
+      [self cardWithTitle:@"Paste Behavior"
+                     rows:@[
+                       [self cardRowWithLabel:@"Press Return after paste"
+                                      control:self.autoReturnSwitch],
+                     ]
+                    width:cardWidth];
+
   // ── Feedback Sounds ──
   self.startSoundCheckbox = [self settingsSwitchWithAction:NULL];
   self.stopSoundCheckbox = [self settingsSwitchWithAction:NULL];
@@ -2170,11 +2183,12 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
 
   // ── Layout ──
   CGFloat triggerH = triggerCard.frame.size.height;
+  CGFloat pasteH = pasteCard.frame.size.height;
   CGFloat feedbackH = feedbackCard.frame.size.height;
   CGFloat recordingH = recordingCard.frame.size.height;
-  CGFloat contentHeight =
-      topPad + triggerH + cardSpacing + feedbackH + cardSpacing + recordingH +
-      56;
+  CGFloat contentHeight = topPad + triggerH + cardSpacing + pasteH +
+                          cardSpacing + feedbackH + cardSpacing + recordingH +
+                          56;
 
   NSView *pane =
       [[NSView alloc] initWithFrame:NSMakeRect(0, 0, paneWidth, contentHeight)];
@@ -2190,6 +2204,14 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
                                 ? triggerCard.subviews[1]
                                 : triggerCard.subviews[0];
   [self layoutCardRowControls:triggerCardBody width:cardWidth];
+
+  y -= cardSpacing + pasteH;
+  pasteCard.frame = NSMakeRect(24, y, cardWidth, pasteH);
+  [pane addSubview:pasteCard];
+  NSView *pasteCardBody = pasteCard.subviews.count > 1
+                              ? pasteCard.subviews[1]
+                              : pasteCard.subviews[0];
+  [self layoutCardRowControls:pasteCardBody width:cardWidth];
 
   y -= cardSpacing + feedbackH;
   feedbackCard.frame = NSMakeRect(24, y, cardWidth, feedbackH);
@@ -5381,6 +5403,7 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType,
         configBooleanValue(configGet(@"feedback.error_sound"), NO);
     BOOL muteSystemOutput =
         configBooleanValue(configGet(@"feedback.mute_system_output"), NO);
+    BOOL autoReturn = configBooleanValue(configGet(@"paste.auto_return"), NO);
     self.startSoundCheckbox.state =
         startSound ? NSControlStateValueOn : NSControlStateValueOff;
     self.stopSoundCheckbox.state =
@@ -5389,6 +5412,8 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType,
         errorSound ? NSControlStateValueOn : NSControlStateValueOff;
     self.muteSystemOutputCheckbox.state =
         muteSystemOutput ? NSControlStateValueOn : NSControlStateValueOff;
+    self.autoReturnSwitch.state =
+        autoReturn ? NSControlStateValueOn : NSControlStateValueOff;
     [self rememberLoadedBooleanValue:startSound
                               forKey:@"feedback.start_sound"];
     [self rememberLoadedBooleanValue:stopSound
@@ -5397,6 +5422,7 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType,
                               forKey:@"feedback.error_sound"];
     [self rememberLoadedBooleanValue:muteSystemOutput
                               forKey:@"feedback.mute_system_output"];
+    [self rememberLoadedBooleanValue:autoReturn forKey:@"paste.auto_return"];
   } else if ([identifier isEqualToString:kToolbarDictionary]) {
     NSString *dictPath = [dir stringByAppendingPathComponent:kDictionaryFile];
     NSString *dictContent =
@@ -5732,6 +5758,16 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType,
                                 forKey:@"feedback.mute_system_output"]) {
       saveOk &=
           configSet(@"feedback.mute_system_output", muteSystemOutput);
+    }
+  }
+  if (self.autoReturnSwitch) {
+    NSString *autoReturn =
+        (self.autoReturnSwitch.state == NSControlStateValueOn) ? @"true"
+                                                               : @"false";
+    if ([self shouldPersistBooleanValue:
+                  self.autoReturnSwitch.state == NSControlStateValueOn
+                                forKey:@"paste.auto_return"]) {
+      saveOk &= configSet(@"paste.auto_return", autoReturn);
     }
   }
   if (self.templatesEnabledSwitch) {
