@@ -7,6 +7,7 @@ legacy docs/update-feed.json so pre-Sparkle builds still learn about new
 releases.
 """
 import argparse
+import html
 import json
 import pathlib
 import re
@@ -26,7 +27,7 @@ LEGACY_FEED_ZIP = "Koe-MLX-macOS-arm64.zip"
 
 ITEM_TEMPLATE = """    <item>
       <title>Version {version}</title>
-      <link>{notes_url}</link>
+      <link>{notes_url}</link>{description}
       <sparkle:version>{build}</sparkle:version>
       <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>{min_os}</sparkle:minimumSystemVersion>
@@ -36,6 +37,83 @@ ITEM_TEMPLATE = """    <item>
         length="{length}"
         type="application/octet-stream" />
     </item>"""
+
+
+INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+
+
+def md_inline(text: str) -> str:
+    text = html.escape(text, quote=False)
+    text = INLINE_CODE_RE.sub(r"<code>\1</code>", text)
+    text = BOLD_RE.sub(r"<strong>\1</strong>", text)
+    return text
+
+
+def md_to_html(lines: list) -> str:
+    """Convert the changelog's markdown subset (### headings, wrapped '- '
+    bullets, plain paragraphs) to HTML for Sparkle's release-notes view."""
+    out = []
+    bullets = []
+
+    def flush():
+        if bullets:
+            out.append("<ul>")
+            for item in bullets:
+                out.append("<li>%s</li>" % md_inline(" ".join(item)))
+            out.append("</ul>")
+            bullets.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            flush()
+            out.append("<h3>%s</h3>" % md_inline(stripped[4:]))
+        elif stripped.startswith("- "):
+            bullets.append([stripped[2:]])
+        elif stripped and bullets:
+            # Continuation of a wrapped bullet.
+            bullets[-1].append(stripped)
+        elif stripped:
+            flush()
+            out.append("<p>%s</p>" % md_inline(stripped))
+        else:
+            flush()
+    flush()
+    return "\n".join(out)
+
+
+def changelog_html(version: str) -> str:
+    """Extract the '## <version>' section from CHANGELOG.md as HTML.
+    Returns an empty string when the section is missing."""
+    path = pathlib.Path("CHANGELOG.md")
+    if not path.exists():
+        return ""
+    section = []
+    in_section = False
+    for line in path.read_text().splitlines():
+        if line.startswith("## "):
+            if in_section:
+                break
+            heading = line[3:].strip()
+            if heading.split(" - ")[0].strip() == version:
+                in_section = True
+            continue
+        if in_section:
+            section.append(line)
+    if not in_section:
+        return ""
+    return md_to_html(section)
+
+
+def description_block(version: str, notes_url: str) -> str:
+    """Sparkle renders <description> HTML directly in the update dialog."""
+    notes = changelog_html(version)
+    if not notes:
+        notes = '<p>See the <a href="%s">full release notes</a>.</p>' % notes_url
+    # A CDATA section must not contain the ']]>' terminator.
+    notes = notes.replace("]]>", "]]&gt;")
+    return "\n      <description><![CDATA[\n%s\n      ]]></description>" % notes
 
 
 def main():
@@ -74,6 +152,7 @@ def main():
             signature=meta["signature"],
             length=meta["length"],
             notes_url=notes_url,
+            description=description_block(meta["version"], notes_url),
         )
         new_xml, count = re.subn(
             r"(<language>en</language>)",
