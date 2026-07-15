@@ -5,6 +5,29 @@
     <description>Updates for the standard app (Apple Silicon).</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.19</title>
+      <link>https://github.com/missuo/koe/releases/tag/v1.0.19</link>
+      <description><![CDATA[
+<h3>Added</h3>
+<ul>
+<li>The in-app update dialog now shows what changed in the new version: Sparkle appcast entries carry the release's changelog section as formatted release notes (effective for updates released from this version on).</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>Fixed the long-standing phantom-keypress-on-quit bug: quitting Koe after a period of use could fire other apps' Fn/Globe hotkeys (screenshot tools, other dictation apps). The hotkey event tap ran on the main thread, so main-thread stalls (ASR finalization, pasting) could swallow in-flight modifier events; WindowServer then accumulated stale modifier state and flushed corrective Fn key events into the session when the tap was destroyed at quit. The tap now runs on a dedicated thread that never stalls, and it is torn down before any slow shutdown work. This also fixes real keystrokes being silently dropped for 1–2 seconds while Koe was quitting.</li>
+<li>Pending synthetic paste events are now cancelled on every termination path (Sparkle update relaunch, logout, shutdown), not just the status-bar Quit.</li>
+</ul>
+      ]]></description>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>1.0.19</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 15 Jul 2026 18:15:56 GMT</pubDate>
+      <enclosure url="https://github.com/missuo/koe/releases/download/v1.0.19/Koe-macOS-arm64.zip"
+        sparkle:edSignature="g2ATJpzS9HiFyfS4K+vab1Oh1teBRFaQt092qzNG2kvK7Tly397QQFGOAGhekM5kMkN2fQIxkKjd++xaQnoACQ=="
+        length="11848710"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 1.0.18</title>
       <link>https://github.com/missuo/koe/releases/tag/v1.0.18</link>
       <sparkle:version>19</sparkle:version>
