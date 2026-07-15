@@ -39,6 +39,15 @@ typedef NS_ENUM(NSInteger, SPHotkeyState) {
 @property (nonatomic, strong) NSThread *tapThread;
 @property (nonatomic, assign) CFRunLoopRef tapRunLoop;
 @property (nonatomic, strong) dispatch_semaphore_t tapShutdownSemaphore;
+// Whether the current tap thread was started asking for an ACTIVE
+// (consuming) tap. An active tap is only requested while something actually
+// needs to swallow events: a non-modifier trigger key, or the template
+// selector's number shortcuts. The rest of the time a LISTEN-ONLY tap is
+// used: quitting Koe after long real-world use with a long-lived ACTIVE tap
+// makes WindowServer emit phantom Fn FlagsChanged events at tap teardown
+// (issues #57/#65) — a mechanism we could reproduce with Koe but never with
+// short-lived or listen-only taps.
+@property (nonatomic, assign) BOOL tapWantsActive;
 @property (nonatomic, assign, readwrite) BOOL canConsumeGlobalKeyEvents;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *suppressedNumberKeyCodes;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *suppressedHotkeyKeyCodes;
@@ -57,6 +66,10 @@ typedef NS_ENUM(NSInteger, SPHotkeyState) {
 - (void)addSuppressedHotkeyKeyCode:(NSNumber *)keyCodeNumber;
 - (BOOL)removeSuppressedHotkeyKeyCodeIfPresent:(NSNumber *)keyCodeNumber;
 - (void)tapThreadMain:(dispatch_semaphore_t)readySemaphore;
+- (BOOL)needsEventConsumption;
+- (void)startTapThread;
+- (void)stopTapThread;
+- (void)updateTapModeIfNeeded;
 - (NSUInteger)currentModifierFlags;
 - (void)cancelPendingModifierRelease;
 - (void)scheduleModifierRelease;
@@ -259,6 +272,20 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
 
     // Also try CGEventTap as additional source, hosted on a dedicated thread
     // (see tapThread property for why it must never share the main thread).
+    [self startTapThread];
+}
+
+- (BOOL)needsEventConsumption {
+    // Modifier-only triggers (Fn, Option, …) never consume the trigger
+    // events; only the template selector's number shortcuts need swallowing.
+    // Non-modifier triggers consume their keyDown/keyUp so the trigger key
+    // does not leak into the focused app.
+    return ![self isModifierOnlyMatchKind:self.targetMatchKind] || self.numberKeyHandler != nil;
+}
+
+- (void)startTapThread {
+    if (self.tapThread) return;
+    self.tapWantsActive = [self needsEventConsumption];
     dispatch_semaphore_t ready = dispatch_semaphore_create(0);
     self.tapShutdownSemaphore = dispatch_semaphore_create(0);
     NSThread *thread = [[NSThread alloc] initWithTarget:self
@@ -269,7 +296,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
     self.tapThread = thread;
     [thread start];
     // Wait for the tap to be installed so canConsumeGlobalKeyEvents is
-    // accurate for callers that read it right after start.
+    // accurate for callers that read it right after this returns.
     dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
 
     if (!self.eventTap) {
@@ -277,12 +304,41 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
     }
 }
 
+- (void)stopTapThread {
+    if (!self.tapThread) return;
+    // Disable first so the tap stops gating the session event stream
+    // immediately, then stop the tap thread's run loop and wait for it to
+    // finish tearing the tap down on its own thread.
+    if (self.eventTap) {
+        CGEventTapEnable(self.eventTap, false);
+    }
+    CFRunLoopRef tapRunLoop = self.tapRunLoop;
+    if (tapRunLoop) {
+        CFRunLoopStop(tapRunLoop);
+    }
+    if (self.tapShutdownSemaphore) {
+        dispatch_semaphore_wait(self.tapShutdownSemaphore,
+                                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
+    }
+    self.tapThread = nil;
+    self.tapShutdownSemaphore = nil;
+    self.canConsumeGlobalKeyEvents = NO;
+}
+
+- (void)updateTapModeIfNeeded {
+    if (!self.running) return;
+    if (self.tapWantsActive == [self needsEventConsumption]) return;
+    [self stopTapThread];
+    [self startTapThread];
+}
+
 - (void)tapThreadMain:(dispatch_semaphore_t)readySemaphore {
     @autoreleasepool {
-        // Prefer active taps that can swallow handled number shortcuts so they
-        // do not leak into the user's focused app. Some systems reject one tap
-        // location but allow another, so try both before degrading to
-        // listen-only.
+        // When consumption is needed, prefer active taps that can swallow
+        // handled events so they do not leak into the user's focused app;
+        // some systems reject one tap location but allow another, so try
+        // both before degrading to listen-only. When nothing needs to be
+        // consumed, go straight to listen-only (see tapWantsActive).
         CGEventMask mask = CGEventMaskBit(kCGEventFlagsChanged)
                          | CGEventMaskBit(kCGEventKeyDown)
                          | CGEventMaskBit(kCGEventKeyUp);
@@ -290,15 +346,23 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
             CGEventTapLocation location;
             CGEventTapOptions options;
             NSString *logMessage;
-        } attempts[] = {
+        } activeAttempts[] = {
             { kCGSessionEventTap, kCGEventTapOptionDefault, @"[Koe] CGEventTap active on session stream (event suppression enabled)" },
             { kCGHIDEventTap, kCGEventTapOptionDefault, @"[Koe] CGEventTap active on HID stream (event suppression enabled)" },
             { kCGSessionEventTap, kCGEventTapOptionListenOnly, @"[Koe] CGEventTap active in listen-only fallback mode on session stream" },
             { kCGHIDEventTap, kCGEventTapOptionListenOnly, @"[Koe] CGEventTap active in listen-only fallback mode on HID stream" },
+        }, listenAttempts[] = {
+            { kCGSessionEventTap, kCGEventTapOptionListenOnly, @"[Koe] CGEventTap listening on session stream (no event consumption needed)" },
+            { kCGHIDEventTap, kCGEventTapOptionListenOnly, @"[Koe] CGEventTap listening on HID stream (no event consumption needed)" },
         };
+        BOOL wantActive = self.tapWantsActive;
+        __typeof__(activeAttempts[0]) *attempts = wantActive ? activeAttempts : listenAttempts;
+        NSUInteger attemptCount = wantActive
+            ? sizeof(activeAttempts) / sizeof(activeAttempts[0])
+            : sizeof(listenAttempts) / sizeof(listenAttempts[0]);
 
         self.canConsumeGlobalKeyEvents = NO;
-        for (NSUInteger i = 0; i < sizeof(attempts) / sizeof(attempts[0]); i++) {
+        for (NSUInteger i = 0; i < attemptCount; i++) {
             self.eventTap = CGEventTapCreate(attempts[i].location,
                                              kCGHeadInsertEventTap,
                                              attempts[i].options,
@@ -389,6 +453,30 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
 - (BOOL)hasUnconfirmedPreCapture {
     return self.state == SPHotkeyStatePending ||
            self.state == SPHotkeyStateDoubleTapSecondDown;
+}
+
+@synthesize numberKeyHandler = _numberKeyHandler;
+
+- (BOOL (^)(NSInteger))numberKeyHandler {
+    @synchronized (self) {
+        return _numberKeyHandler;
+    }
+}
+
+- (void)setNumberKeyHandler:(BOOL (^)(NSInteger))handler {
+    BOOL hadHandler;
+    BOOL hasHandler;
+    @synchronized (self) {
+        hadHandler = (_numberKeyHandler != nil);
+        _numberKeyHandler = [handler copy];
+        hasHandler = (_numberKeyHandler != nil);
+    }
+    // Number-key capture is the only reason a modifier-only trigger needs an
+    // ACTIVE tap. Upgrade while the template selector is visible; downgrade
+    // back to listen-only as soon as it goes away.
+    if (hadHandler != hasHandler) {
+        [self updateTapModeIfNeeded];
+    }
 }
 
 - (BOOL)handleNumberKeyWithKeyCode:(NSInteger)keyCode {
@@ -566,24 +654,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         [NSEvent removeMonitor:self.localMonitorRef];
         self.localMonitorRef = nil;
     }
-    if (self.tapThread) {
-        // Disable first so the tap stops gating the session event stream
-        // immediately, then stop the tap thread's run loop and wait for it
-        // to finish tearing the tap down on its own thread.
-        if (self.eventTap) {
-            CGEventTapEnable(self.eventTap, false);
-        }
-        CFRunLoopRef tapRunLoop = self.tapRunLoop;
-        if (tapRunLoop) {
-            CFRunLoopStop(tapRunLoop);
-        }
-        if (self.tapShutdownSemaphore) {
-            dispatch_semaphore_wait(self.tapShutdownSemaphore,
-                                    dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)));
-        }
-        self.tapThread = nil;
-        self.tapShutdownSemaphore = nil;
-    }
+    [self stopTapThread];
 
     BOOL hadPendingTrigger = [self hasUnconfirmedPreCapture];
     [self cancelHoldTimer];

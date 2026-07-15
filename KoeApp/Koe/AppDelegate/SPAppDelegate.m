@@ -975,13 +975,11 @@ static BOOL configFlagEnabled(const char *keyPath) {
 #pragma mark - Number Key Monitoring
 
 - (void)startNumberKeyMonitoring {
-    if (!self.hotkeyMonitor.canConsumeGlobalKeyEvents) {
-        self.hotkeyMonitor.numberKeyHandler = nil;
-        NSLog(@"[Koe] Template selector visible (click-only; global number shortcuts unavailable without an active suppressing event tap)");
-        return;
-    }
-
     __weak typeof(self) weakSelf = self;
+    // Assign the handler first: for modifier-only triggers the monitor runs
+    // a listen-only tap and only upgrades to a consuming tap while a number
+    // handler is installed, so canConsumeGlobalKeyEvents is meaningful only
+    // after this assignment.
     self.hotkeyMonitor.numberKeyHandler = ^BOOL(NSInteger number) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return NO;
@@ -992,6 +990,12 @@ static BOOL configFlagEnabled(const char *keyPath) {
         }
         return handled;
     };
+
+    if (!self.hotkeyMonitor.canConsumeGlobalKeyEvents) {
+        self.hotkeyMonitor.numberKeyHandler = nil;
+        NSLog(@"[Koe] Template selector visible (click-only; global number shortcuts unavailable without an active suppressing event tap)");
+        return;
+    }
     NSLog(@"[Koe] Template selector visible (global number shortcuts active)");
 }
 
