@@ -473,6 +473,31 @@ Available template placeholders in `user_prompt.txt`:
 | `{{interim_history}}` | ASR interim revision history — shows how the transcript changed over time, helping the LLM identify uncertain words |
 | `{{dictionary_entries}}` | Filtered dictionary entries for LLM context |
 
+#### Prefix-cache-friendly ordering
+
+The built-in user prompt places the dictionary before interim history and the
+final ASR transcript. For providers that reuse exact prompt prefixes, this can
+extend cache reuse when the rendered dictionary block stays unchanged. The
+benefit is strongest with the default `dictionary_max_candidates: 0` and a
+stable dictionary. If a positive candidate limit filters and reorders a larger
+dictionary for each transcript, the rendered dictionary itself becomes dynamic
+and the cache benefit may be smaller.
+
+DeepSeek enables exact-prefix caching automatically. OpenAI applies prompt
+caching only for eligible models and requests. For the Anthropic protocol, Koe
+sends `cache_control` breakpoints automatically: one on the system prompt and
+one at the end of the stable head of the user prompt (everything before the
+first `{{asr_text}}` / `{{interim_history}}` placeholder, which covers the
+dictionary in the default field order). Anthropic silently skips caching when
+the prefix is below the model's minimum cacheable length, and cache writes are
+billed at a small premium over plain input tokens, so short prompts simply
+behave as before. Local MLX models do not use a remote prompt cache.
+
+Koe never overwrites an existing `~/.koe/user_prompt.txt`. Existing users who
+want this ordering must update that file manually so the fields appear as
+dictionary, interim history, then final ASR transcript. Koe will use the new
+order automatically only when creating a missing prompt file.
+
 The default prompts are tuned for software developers working in mixed Chinese-English, but you can adapt them for any language or domain.
 If either prompt file is missing or empty, Koe falls back to the built-in defaults
 compiled into `koe-core`.
