@@ -5,6 +5,24 @@
     <description>Updates for the app with on-device MLX model support (Apple Silicon).</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.21</title>
+      <link>https://github.com/missuo/koe/releases/tag/v1.0.21</link>
+      <description><![CDATA[
+<h3>Fixed</h3>
+<ul>
+<li>Further hardened the phantom-keypress-on-quit fix: the hotkey event tap now runs in listen-only mode whenever nothing needs to be consumed (which is all the time for modifier triggers like Fn or Option), upgrading to a consuming tap only while the template selector's number shortcuts are on screen. Quitting after long real-world use previously could still emit phantom Fn events from the long-lived consuming tap's teardown — listen-only taps demonstrably never do this.</li>
+</ul>
+      ]]></description>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>1.0.21</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 15 Jul 2026 19:27:15 GMT</pubDate>
+      <enclosure url="https://github.com/missuo/koe/releases/download/v1.0.21/Koe-MLX-macOS-arm64.zip"
+        sparkle:edSignature="pIOk75sxN5bkFSrUGY9Y1kiz9+QXox7zm3aH7ahx4SuiXLmLfvsaErjScMMmAThtP67M5zDkzYXFb/vztmvIAQ=="
+        length="32630696"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 1.0.20</title>
       <link>https://github.com/missuo/koe/releases/tag/v1.0.20</link>
       <description><![CDATA[
