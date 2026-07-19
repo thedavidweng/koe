@@ -72,4 +72,10 @@ typedef NS_ENUM(uint8_t, SPHotkeyTriggerMode) {
 /// Atomic: read from the event-tap thread while set/cleared on the main thread.
 @property (copy) void (^anyKeyDismissHandler)(void);
 
+/// Optional block called when Return/Enter is pressed.
+/// Return YES to consume the key event. It is only honoured when the active
+/// CGEventTap can suppress the event globally.
+/// Atomic: read from the event-tap thread while set/cleared on the main thread.
+@property (copy) BOOL (^enterKeyHandler)(void);
+
 @end

@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout, Duration};
 
 const LLM_WARMUP_SAFETY_MARGIN: Duration = Duration::from_secs(20);
@@ -55,6 +55,7 @@ struct LlmWarmupState {
 struct Core {
     runtime: Runtime,
     audio_tx: Option<mpsc::Sender<Vec<u8>>>,
+    accept_asr_tx: Option<watch::Sender<bool>>,
     session: Arc<Mutex<Option<Session>>>,
     cancelled: Arc<AtomicBool>,
     config: Config,
@@ -137,6 +138,7 @@ pub unsafe extern "C" fn sp_core_create(config_path: *const c_char) -> i32 {
     let core = Core {
         runtime,
         audio_tx: None,
+        accept_asr_tx: None,
         session: Arc::new(Mutex::new(None)),
         cancelled: Arc::new(AtomicBool::new(false)),
         config: cfg,
@@ -277,6 +279,7 @@ pub extern "C" fn sp_core_session_begin(context: SPSessionContext) -> i32 {
     // cancellation; its cleanup_session writes to the OLD Arc, not the new one.
     core.cancelled.store(true, Ordering::SeqCst);
     core.audio_tx = None;
+    core.accept_asr_tx = None;
 
     // Create fresh per-session Arcs so old and new tasks are fully isolated
     core.cancelled = Arc::new(AtomicBool::new(false));
@@ -285,6 +288,8 @@ pub extern "C" fn sp_core_session_begin(context: SPSessionContext) -> i32 {
     // Audio channel for new session
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(1024);
     core.audio_tx = Some(audio_tx);
+    let (accept_asr_tx, accept_asr_rx) = watch::channel(false);
+    core.accept_asr_tx = Some(accept_asr_tx);
 
     let cancelled = core.cancelled.clone();
     let session_arc = core.session.clone();
@@ -329,6 +334,7 @@ pub extern "C" fn sp_core_session_begin(context: SPSessionContext) -> i32 {
             session_token,
             mode,
             audio_rx,
+            accept_asr_rx,
             asr_config,
             asr_provider_name,
             asr,
@@ -394,8 +400,26 @@ pub extern "C" fn sp_core_session_cancel() -> i32 {
         core.cancelled.store(true, Ordering::SeqCst);
         // Drop the audio sender to unblock the session task
         core.audio_tx = None;
+        core.accept_asr_tx = None;
     }
     0
+}
+
+/// Request that the current session skip LLM correction and use the raw ASR text.
+///
+/// This is only meaningful after ASR finalization has produced text and while
+/// the LLM correction future is still in progress.
+#[no_mangle]
+pub extern "C" fn sp_core_accept_asr_result() -> i32 {
+    log::info!("sp_core_accept_asr_result called");
+
+    let global = CORE.lock().unwrap();
+    if let Some(ref core) = *global {
+        if let Some(ref tx) = core.accept_asr_tx {
+            return if tx.send(true).is_ok() { 0 } else { -1 };
+        }
+    }
+    -1
 }
 
 fn validate_prompt_templates(
@@ -764,6 +788,7 @@ async fn run_session(
     session_token: u64,
     mode: SPSessionMode,
     mut audio_rx: mpsc::Receiver<Vec<u8>>,
+    mut accept_asr_rx: watch::Receiver<bool>,
     asr_config: AsrConfig,
     asr_provider: String,
     mut asr: Box<dyn AsrProvider>,
@@ -931,7 +956,7 @@ async fn run_session(
         return;
     }
 
-    let asr_text = aggregator.best_text().to_string();
+    let asr_text = aggregator.best_text();
     if asr_text.trim().is_empty() {
         // A silent recording is a valid no-op, not a user-visible failure.
         // Exit quietly so the app returns to idle without error sounds or alerts.
@@ -1052,28 +1077,43 @@ async fn run_session(
             user_prompt_stable_prefix_len,
         };
 
-        match llm.correct(&request).await {
-            Ok(corrected) => {
-                mark_llm_connection_touched(&llm_warmup_state);
-                if prompt::looks_like_degenerate_rewrite(
-                    &corrected,
-                    &request.asr_text,
-                    &request.dictionary_entries,
-                ) {
-                    log::warn!(
-                        "[{session_id}] LLM output looks degenerate ({} chars from {} chars ASR); falling back to raw ASR text",
-                        corrected.len(),
-                        request.asr_text.len()
-                    );
-                    (asr_text.clone(), false)
-                } else {
-                    log::info!("[{session_id}] LLM corrected: {} chars", corrected.len());
-                    (corrected, true)
+        let correction = llm.correct(&request);
+        tokio::pin!(correction);
+
+        tokio::select! {
+            result = &mut correction => {
+                match result {
+                    Ok(corrected) => {
+                        mark_llm_connection_touched(&llm_warmup_state);
+                        if prompt::looks_like_degenerate_rewrite(
+                            &corrected,
+                            &request.asr_text,
+                            &request.dictionary_entries,
+                        ) {
+                            log::warn!(
+                                "[{session_id}] LLM output looks degenerate ({} chars from {} chars ASR); falling back to raw ASR text",
+                                corrected.len(),
+                                request.asr_text.len()
+                            );
+                            (asr_text.clone(), false)
+                        } else {
+                            log::info!("[{session_id}] LLM corrected: {} chars", corrected.len());
+                            (corrected, true)
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[{session_id}] LLM failed, falling back to ASR text: {e}");
+                        invoke_session_warning(session_token, &format!("LLM correction failed: {e}"));
+                        (asr_text.clone(), false)
+                    }
                 }
             }
-            Err(e) => {
-                log::warn!("[{session_id}] LLM failed, falling back to ASR text: {e}");
-                invoke_session_warning(session_token, &format!("LLM correction failed: {e}"));
+            accepted = wait_for_asr_accept(&mut accept_asr_rx) => {
+                if accepted {
+                    log::info!("[{session_id}] user accepted raw ASR text; aborting LLM correction");
+                } else {
+                    log::debug!("[{session_id}] ASR accept channel closed; falling back to raw ASR text");
+                }
                 (asr_text.clone(), false)
             }
         }
@@ -1179,6 +1219,20 @@ fn format_unexpected_asr_close_error(reason: Option<&str>) -> String {
 fn cleanup_session(session_arc: &Arc<Mutex<Option<Session>>>) {
     let mut s = session_arc.lock().unwrap();
     *s = None;
+}
+
+async fn wait_for_asr_accept(rx: &mut watch::Receiver<bool>) -> bool {
+    if *rx.borrow() {
+        return true;
+    }
+
+    while rx.changed().await.is_ok() {
+        if *rx.borrow_and_update() {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn llm_enabled_for_session(cfg: &config::LlmSection) -> bool {
@@ -2171,6 +2225,24 @@ mod tests {
         let result = wait_for_final(0, &mut mock, &mut agg).await;
         assert!(result.is_some());
         assert!(result.unwrap().contains("connection"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_asr_accept_returns_true_after_signal() {
+        let (tx, mut rx) = watch::channel(false);
+
+        tx.send(true).unwrap();
+
+        assert!(wait_for_asr_accept(&mut rx).await);
+    }
+
+    #[tokio::test]
+    async fn wait_for_asr_accept_returns_false_when_channel_closes() {
+        let (tx, mut rx) = watch::channel(false);
+
+        drop(tx);
+
+        assert!(!wait_for_asr_accept(&mut rx).await);
     }
 
     // ── Main loop error-with-partial-text tests ─────────────────────────

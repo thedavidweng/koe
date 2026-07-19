@@ -61,6 +61,71 @@ fn live_preview_keeps_previous_final_visible_during_new_segment_interim() {
 }
 
 #[test]
+fn live_preview_advances_when_definite_arrives_after_prior_final() {
+    let mut agg = TranscriptAggregator::new();
+
+    agg.update_final("第一句话。");
+    agg.update_definite("第一句话。第二句话。");
+
+    assert_eq!(agg.live_preview(), "第一句话。第二句话。");
+    assert_eq!(agg.best_text(), "第一句话。第二句话。");
+}
+
+#[test]
+fn live_preview_uses_definite_before_any_final() {
+    let mut agg = TranscriptAggregator::new();
+
+    agg.update_interim("临时识别");
+    agg.update_definite("确认识别");
+
+    assert_eq!(agg.live_preview(), "确认识别");
+}
+
+#[test]
+fn final_after_definite_replaces_cleanly_when_revised_mid_string() {
+    // A second-pass definite extends the committed view, then the third-pass
+    // final revises a character the definite had confirmed (八 → 吧). The
+    // final must wholesale-replace the committed text; baking the definite
+    // into final_text would defeat the prefix check in merge_committed_text
+    // and duplicate the transcript via the overlap fallback.
+    let mut agg = TranscriptAggregator::new();
+
+    agg.update_final("今天天气不错。");
+    agg.update_definite("今天天气不错。我们去公园八");
+    assert_eq!(agg.live_preview(), "今天天气不错。我们去公园八");
+
+    agg.update_final("今天天气不错。我们去公园吧。");
+    assert_eq!(agg.best_text(), "今天天气不错。我们去公园吧。");
+    assert_eq!(agg.live_preview(), "今天天气不错。我们去公园吧。");
+}
+
+#[test]
+fn live_preview_keeps_updating_when_new_segment_shares_a_char_with_prior_final() {
+    // Reproduces the "live caption freezes after a pause" bug. Two segments
+    // were finalized cumulatively, then a third segment begins whose first
+    // character happens to match a position inside the cumulative final.
+    // The provider must emit interims that include the full running
+    // transcript; live_preview must then surface the latest interim rather
+    // than the stale committed final.
+    let mut agg = TranscriptAggregator::new();
+
+    agg.update_final("今天天气不错");
+    agg.update_final("今天天气不错我们去公园");
+
+    // New segment 3 begins with the character "我" — which also happens to be
+    // the first character of segment 2 ("我们去公园"). Without the DoubaoIME
+    // fix that bakes finalized segments into confirmed_text, the interim
+    // would have been the truncated "今天天气不错我" — a coincidental prefix
+    // of the cumulative final — and live_preview would have returned the
+    // committed text, freezing the display.
+    agg.update_interim("今天天气不错我们去公园我");
+    assert_eq!(agg.live_preview(), "今天天气不错我们去公园我");
+
+    agg.update_interim("今天天气不错我们去公园我喜欢");
+    assert_eq!(agg.live_preview(), "今天天气不错我们去公园我喜欢");
+}
+
+#[test]
 fn live_preview_does_not_duplicate_full_transcript_interim() {
     let mut agg = TranscriptAggregator::new();
 

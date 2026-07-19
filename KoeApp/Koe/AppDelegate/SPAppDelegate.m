@@ -40,6 +40,9 @@
 @property (nonatomic, copy) NSString *instantPastedText;
 @property (nonatomic, assign) BOOL instantPasteKeepClipboard;
 @property (nonatomic, strong) id numberKeyMonitor;
+@property (nonatomic, assign) BOOL llmCorrectionInProgress;
+@property (nonatomic, assign) BOOL rawAsrFallbackInteractionActive;
+@property (nonatomic, assign) BOOL sessionWantsAudioCapture;
 @property (nonatomic, assign) BOOL audioPreparationEnabled;
 @property (nonatomic, assign) BOOL preCaptureInterruptedPendingSessionEnd;
 @property (nonatomic, assign) BOOL loggedFirstRecognitionForActivation;
@@ -56,6 +59,8 @@ static BOOL sessionStateAllowsConfigReload(NSString *state) {
 }
 
 @implementation SPAppDelegate
+
+static const NSTimeInterval kManualPasteResultLingerDuration = 8.0;
 
 static BOOL configFlagEnabled(const char *keyPath) {
     char *rawValue = sp_config_get(keyPath);
@@ -77,15 +82,37 @@ static BOOL configFlagEnabled(const char *keyPath) {
     return [self.audioCaptureManager prepare];
 }
 
+static BOOL configFlagEnabledWithDefault(const char *keyPath, BOOL defaultValue) {
+    char *rawValue = sp_config_get(keyPath);
+    if (!rawValue) return defaultValue;
+
+    BOOL enabled = defaultValue;
+    if (strcmp(rawValue, "true") == 0) {
+        enabled = YES;
+    } else if (strcmp(rawValue, "false") == 0) {
+        enabled = NO;
+    }
+    sp_core_free_string(rawValue);
+    return enabled;
+}
+
 - (BOOL)shouldShowPromptTemplateButtons {
     return configFlagEnabled("llm.prompt_templates_enabled");
 }
 
+- (BOOL)shouldAutoPasteProcessedText {
+    return configFlagEnabledWithDefault("llm.auto_paste_processed_text", YES);
+}
+
 - (void)showPromptTemplateButtonsIfNeededOrDismiss {
+    [self showPromptTemplateButtonsIfNeededOrDismissWithLingerDuration:0];
+}
+
+- (void)showPromptTemplateButtonsIfNeededOrDismissWithLingerDuration:(NSTimeInterval)lingerDuration {
     [self startAnyKeyDismissMonitoring];
 
     if (![self shouldShowPromptTemplateButtons]) {
-        [self.overlayPanel lingerAndDismiss];
+        [self.overlayPanel lingerAndDismissWithDuration:lingerDuration];
         return;
     }
 
@@ -106,10 +133,10 @@ static BOOL configFlagEnabled(const char *keyPath) {
 
     NSLog(@"[Koe] Prompt templates visible: %lu / %lu", (unsigned long)visibleTemplates.count, (unsigned long)templates.count);
     if (visibleTemplates.count > 0 && self.lastAsrText.length > 0) {
-        [self.overlayPanel showTemplateButtons:visibleTemplates];
+        [self.overlayPanel showTemplateButtons:visibleTemplates lingerDuration:lingerDuration];
         [self startNumberKeyMonitoring];
     } else {
-        [self.overlayPanel lingerAndDismiss];
+        [self.overlayPanel lingerAndDismissWithDuration:lingerDuration];
     }
 }
 
@@ -276,6 +303,7 @@ static BOOL configFlagEnabled(const char *keyPath) {
 - (void)applicationWillTerminate:(NSNotification *)notification {
     NSLog(@"[Koe] Application terminating...");
     self.quitting = YES;
+    self.sessionWantsAudioCapture = NO;
     // Stop the hotkey monitor before any slow teardown so its event tap
     // cannot stall the session keyboard stream (see statusBarDidSelectQuit).
     // Safe to call twice — stop() is idempotent.
@@ -392,6 +420,7 @@ static BOOL configFlagEnabled(const char *keyPath) {
     [self.audioCaptureManager cancelPreCapture];
     if (self.preCaptureInterruptedPendingSessionEnd) {
         self.preCaptureInterruptedPendingSessionEnd = NO;
+        self.sessionWantsAudioCapture = NO;
         [self.audioCaptureManager stopCapture];
         [self.rustBridge endSession];
     }
@@ -418,12 +447,14 @@ static BOOL configFlagEnabled(const char *keyPath) {
 
 - (void)hotkeyMonitorDidDetectHoldStart {
     NSLog(@"[Koe] Hold start detected");
+    [self deactivateRawAsrFallbackInteraction];
     [self.audioCaptureManager logActivationMilestone:@"hold decision"];
     [self stopNumberKeyMonitoring];
     [self stopAnyKeyDismissMonitoring];
     [self.overlayPanel hideTemplateButtons];
     self.showingError = NO;
     [self cancelPendingSessionEnd];
+    self.sessionWantsAudioCapture = YES;
     self.preCaptureInterruptedPendingSessionEnd = NO;
     if (self.audioCaptureManager.isCapturing && !self.audioCaptureManager.isPreCapturing) {
         [self.audioCaptureManager stopCapture];
@@ -452,6 +483,7 @@ static BOOL configFlagEnabled(const char *keyPath) {
     self.preCaptureInterruptedPendingSessionEnd = NO;
     dispatch_block_t block = dispatch_block_create(0, ^{
         self.pendingSessionEndBlock = nil;
+        self.sessionWantsAudioCapture = NO;
         [self.audioCaptureManager stopCapture];
         [self.rustBridge endSession];
     });
@@ -462,12 +494,14 @@ static BOOL configFlagEnabled(const char *keyPath) {
 
 - (void)hotkeyMonitorDidDetectTapStart {
     NSLog(@"[Koe] Tap start detected");
+    [self deactivateRawAsrFallbackInteraction];
     [self.audioCaptureManager logActivationMilestone:@"tap decision"];
     [self stopNumberKeyMonitoring];
     [self stopAnyKeyDismissMonitoring];
     [self.overlayPanel hideTemplateButtons];
     self.showingError = NO;
     [self cancelPendingSessionEnd];
+    self.sessionWantsAudioCapture = YES;
     self.preCaptureInterruptedPendingSessionEnd = NO;
     if (self.audioCaptureManager.isCapturing && !self.audioCaptureManager.isPreCapturing) {
         [self.audioCaptureManager stopCapture];
@@ -493,6 +527,7 @@ static BOOL configFlagEnabled(const char *keyPath) {
     [self cancelPendingSessionEnd];
     dispatch_block_t block = dispatch_block_create(0, ^{
         self.pendingSessionEndBlock = nil;
+        self.sessionWantsAudioCapture = NO;
         [self.audioCaptureManager stopCapture];
         [self.rustBridge endSession];
     });
@@ -507,31 +542,34 @@ static BOOL configFlagEnabled(const char *keyPath) {
     struct SPFeedbackConfig feedbackConfig = sp_core_get_feedback_config();
     self.audioCaptureManager.muteOutputEnabled = feedbackConfig.mute_system_output;
     [self.audioCaptureManager setInputDeviceID:[self.audioDeviceManager resolvedDeviceID]];
-    BOOL started = [self.audioCaptureManager startCaptureWithAudioCallback:^(const void *buffer, uint32_t length, uint64_t timestamp) {
+    uint64_t token = self.rustBridge.currentSessionToken;
+    SPAudioFrameCallback callback = ^(const void *buffer, uint32_t length, uint64_t timestamp) {
         [self.rustBridge pushAudioFrame:buffer length:length timestamp:timestamp];
-    } includePreRoll:includePreRoll];
-    if (started) return;
+    };
+
+    // AudioQueue capture starts cheaply without blocking the main thread, so a
+    // synchronous start is fine here.
+    if ([self.audioCaptureManager startCaptureWithAudioCallback:callback
+                                                 includePreRoll:includePreRoll]) return;
 
     // After a device route change or fresh permission grant the audio
-    // subsystem may need a moment to settle.  Retry once after a short delay.
+    // subsystem may need a moment to settle. Retry once after a short delay.
     NSLog(@"[Koe] Audio capture failed on first attempt, retrying in 500ms...");
-    uint64_t token = self.rustBridge.currentSessionToken;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
                    dispatch_get_main_queue(), ^{
         if (token != self.rustBridge.currentSessionToken) return;
         if (self.quitting) return;
+        if (!self.sessionWantsAudioCapture) return;
 
         struct SPFeedbackConfig retryFeedback = sp_core_get_feedback_config();
         self.audioCaptureManager.muteOutputEnabled = retryFeedback.mute_system_output;
         [self.audioCaptureManager setInputDeviceID:[self.audioDeviceManager resolvedDeviceID]];
-        BOOL retryStarted = [self.audioCaptureManager startCaptureWithAudioCallback:^(const void *buffer, uint32_t length, uint64_t timestamp) {
-            [self.rustBridge pushAudioFrame:buffer length:length timestamp:timestamp];
-        } includePreRoll:includePreRoll];
-        if (!retryStarted) {
-            [self handleAudioCaptureError:@"Failed to start audio capture"];
-        } else {
+        if ([self.audioCaptureManager startCaptureWithAudioCallback:callback
+                                                     includePreRoll:includePreRoll]) {
             NSLog(@"[Koe] Audio capture started on retry");
+            return;
         }
+        [self handleAudioCaptureError:@"Failed to start audio capture"];
     });
 }
 
@@ -553,6 +591,8 @@ static BOOL configFlagEnabled(const char *keyPath) {
     if (self.quitting) return;
     self.sessionState = @"idle";
     NSLog(@"[Koe] Final text received (%lu chars)", (unsigned long)text.length);
+    self.llmCorrectionInProgress = NO;
+    [self deactivateRawAsrFallbackInteraction];
 
     // Record history
     NSInteger durationMs = 0;
@@ -573,22 +613,22 @@ static BOOL configFlagEnabled(const char *keyPath) {
     // target app; apply the correction in place instead of pasting again.
     if ([self finishInstantPasteWithFinalText:text]) return;
 
-    // Show corrected text in overlay before pasting
-    [self.overlayPanel updateDisplayText:text];
-
-    [self.statusBarManager updateState:@"pasting"];
-    [self.overlayPanel updateState:@"pasting"];
-
-    // Backup clipboard, write text, paste, restore
-    [self.clipboardManager backup];
-    [self.clipboardManager writeText:text];
-
     uint64_t token = self.rustBridge.currentSessionToken;
-
+    BOOL shouldAutoPaste = [self shouldAutoPasteProcessedText];
     BOOL accessOK = [self.permissionManager isAccessibilityGranted];
+    BOOL canAutoPaste = shouldAutoPaste && accessOK;
     NSLog(@"[Koe] Accessibility granted: %@", accessOK ? @"YES" : @"NO");
 
-    if (accessOK) {
+    if (canAutoPaste) {
+        // Show corrected text in overlay before pasting
+        [self.overlayPanel updateDisplayText:text];
+        [self.statusBarManager updateState:@"pasting"];
+        [self.overlayPanel updateState:@"pasting"];
+
+        // Auto-paste flow temporarily backs up the clipboard, then restores it.
+        [self.clipboardManager backup];
+        [self.clipboardManager writeText:text];
+
         BOOL autoReturn = configFlagEnabled("paste.auto_return");
         [self.pasteManager simulatePasteWithCompletion:^{
             NSLog(@"[Koe] Paste completion callback fired");
@@ -601,9 +641,26 @@ static BOOL configFlagEnabled(const char *keyPath) {
             [self showPromptTemplateButtonsIfNeededOrDismiss];
         }];
     } else {
-        NSLog(@"[Koe] Accessibility not granted — text copied to clipboard only");
+        [self.clipboardManager cancelPendingRestore];
+        [self.clipboardManager writeText:text];
+
+        BOOL showCopiedBadge = NO;
+        NSTimeInterval lingerDuration = 0;
+        if (!shouldAutoPaste) {
+            NSLog(@"[Koe] Auto-paste disabled — processed text copied to clipboard only");
+            showCopiedBadge = YES;
+            lingerDuration = kManualPasteResultLingerDuration;
+        } else {
+            NSLog(@"[Koe] Accessibility not granted — text copied to clipboard only");
+        }
+
+        [self.overlayPanel updateDisplayText:text];
+        [self.overlayPanel updateState:@"pasting"];
+        if (showCopiedBadge) {
+            [self.overlayPanel showResultBadge:@"✓ Copied"];
+        }
         [self.statusBarManager updateState:@"idle"];
-        [self showPromptTemplateButtonsIfNeededOrDismiss];
+        [self showPromptTemplateButtonsIfNeededOrDismissWithLingerDuration:lingerDuration];
     }
 
     [self applyDeferredConfigReloadIfNeeded];
@@ -615,9 +672,12 @@ static BOOL configFlagEnabled(const char *keyPath) {
     os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_ERROR, "[Koe] Session error: %{public}@", message ?: @"unknown error");
     NSLog(@"[Koe] Session error: %@", message);
     self.showingError = YES;
+    self.llmCorrectionInProgress = NO;
+    [self deactivateRawAsrFallbackInteraction];
     self.instantPastedText = nil;
     [self.instantPasteGuard reset];
     [self.cuePlayer playError];
+    self.sessionWantsAudioCapture = NO;
     [self.audioCaptureManager stopCapture];
     [self.hotkeyMonitor resetToIdle];
     [self.statusBarManager updateState:@"error"];
@@ -722,6 +782,7 @@ static BOOL configFlagEnabled(const char *keyPath) {
     }
     self.lastAsrText = text;
     [self.overlayPanel updateDisplayText:text];
+    [self activateRawAsrFallbackInteractionIfPossible];
 
     [self maybeInstantPasteAsrText:text];
 }
@@ -785,8 +846,8 @@ static BOOL configFlagEnabled(const char *keyPath) {
         [self.clipboardManager cancelPendingRestore];
         [self.clipboardManager writeText:text];
         [self.statusBarManager updateState:@"idle"];
-        [self.overlayPanel updateDisplayText:[text stringByAppendingString:@"  ✓ Copied"]];
         [self.overlayPanel updateState:@"pasting"];
+        [self.overlayPanel showResultBadge:@"✓ Copied"];
         [self.overlayPanel lingerAndDismiss];
     }
 
@@ -812,17 +873,81 @@ static BOOL configFlagEnabled(const char *keyPath) {
 
     // Show result with "Copied" indicator
     [self.statusBarManager updateState:@"idle"];
-    [self.overlayPanel updateDisplayText:[text stringByAppendingString:@"  ✓ Copied"]];
+    [self.overlayPanel updateDisplayText:text];
     [self.overlayPanel updateState:@"pasting"];
+    [self.overlayPanel showResultBadge:@"✓ Copied"];
     [self.overlayPanel lingerAndDismiss];
 }
 
 - (void)rustBridgeDidChangeState:(NSString *)state {
     if (self.quitting || self.showingError) return;
     self.sessionState = state;
+    BOOL isCorrecting = [state isEqualToString:@"correcting"];
+    if (isCorrecting) {
+        self.llmCorrectionInProgress = YES;
+    } else if ([state hasPrefix:@"recording"] ||
+               [state isEqualToString:@"preparing_paste"] ||
+               [state isEqualToString:@"pasting"] ||
+               [state isEqualToString:@"cancelled"] ||
+               [state isEqualToString:@"idle"] ||
+               [state isEqualToString:@"failed"]) {
+        self.llmCorrectionInProgress = NO;
+        [self deactivateRawAsrFallbackInteraction];
+    }
     [self.statusBarManager updateState:state];
     [self.overlayPanel updateState:state];
+    if (isCorrecting) {
+        [self activateRawAsrFallbackInteractionIfPossible];
+    }
     [self applyDeferredConfigReloadIfNeeded];
+}
+
+#pragma mark - Raw ASR Fallback
+
+- (void)activateRawAsrFallbackInteractionIfPossible {
+    if (!self.llmCorrectionInProgress || self.lastAsrText.length == 0) return;
+
+    self.rawAsrFallbackInteractionActive = YES;
+    [self.overlayPanel setRawAsrFallbackClickEnabled:YES];
+
+    // Assign the handler first: for modifier-only triggers the monitor runs
+    // a listen-only tap and only upgrades to a consuming tap while an Enter
+    // handler is installed, so canConsumeGlobalKeyEvents is meaningful only
+    // after this assignment.
+    __weak typeof(self) weakSelf = self;
+    self.hotkeyMonitor.enterKeyHandler = ^BOOL{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return NO;
+        return [strongSelf requestRawAsrFallbackFromUserAction:@"enter"];
+    };
+    if (!self.hotkeyMonitor.canConsumeGlobalKeyEvents) {
+        self.hotkeyMonitor.enterKeyHandler = nil;
+    }
+}
+
+- (void)deactivateRawAsrFallbackInteraction {
+    self.rawAsrFallbackInteractionActive = NO;
+    self.hotkeyMonitor.enterKeyHandler = nil;
+    [self.overlayPanel setRawAsrFallbackClickEnabled:NO];
+}
+
+- (BOOL)requestRawAsrFallbackFromUserAction:(NSString *)action {
+    if (!self.rawAsrFallbackInteractionActive || self.lastAsrText.length == 0) {
+        return NO;
+    }
+
+    BOOL accepted = [self.rustBridge acceptAsrResult];
+    NSLog(@"[Koe] Raw ASR fallback requested via %@ (%@)",
+          action ?: @"unknown",
+          accepted ? @"sent" : @"not active");
+
+    self.llmCorrectionInProgress = NO;
+    [self deactivateRawAsrFallbackInteraction];
+    // Consume the triggering event even if the Rust send failed: a failure
+    // means the correction already finished and its final text is in flight,
+    // so letting the Return through would type a stray newline right before
+    // the paste lands.
+    return YES;
 }
 
 #pragma mark - Audio Error Recovery
@@ -834,6 +959,7 @@ static BOOL configFlagEnabled(const char *keyPath) {
     self.sessionState = @"error";
     self.showingError = YES;
     [self.cuePlayer playError];
+    self.sessionWantsAudioCapture = NO;
     [self.rustBridge cancelSession];
     [self.hotkeyMonitor resetToIdle];
     [self.statusBarManager updateState:@"error"];
@@ -896,6 +1022,7 @@ static BOOL configFlagEnabled(const char *keyPath) {
 
 - (void)statusBarDidSelectQuit {
     self.quitting = YES;
+    self.sessionWantsAudioCapture = NO;
     self.hotkeyMonitor.suspended = YES;
 
     // Stop the hotkey monitor FIRST, before any slow teardown (audio, Rust).
@@ -955,6 +1082,16 @@ static BOOL configFlagEnabled(const char *keyPath) {
 }
 
 #pragma mark - SPOverlayPanelDelegate
+
+- (void)overlayPanelDidDismiss:(id)panel {
+    [self deactivateRawAsrFallbackInteraction];
+    [self stopNumberKeyMonitoring];
+    [self stopAnyKeyDismissMonitoring];
+}
+
+- (void)overlayPanelDidRequestRawAsrFallback:(id)panel {
+    [self requestRawAsrFallbackFromUserAction:@"overlay-click"];
+}
 
 - (void)overlayPanel:(id)panel didSelectTemplateAtIndex:(NSInteger)templateIndex {
     NSLog(@"[Koe] Template selected: index %ld", (long)templateIndex);

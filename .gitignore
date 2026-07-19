@@ -46,3 +46,5 @@ koe-core/target/
 
 # Lucky local session notes (not project content)
 .memory/
+KoeApp/build-ci/
+KoeApp/build-local/

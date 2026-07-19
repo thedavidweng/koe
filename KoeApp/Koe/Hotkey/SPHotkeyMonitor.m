@@ -49,7 +49,9 @@ typedef NS_ENUM(NSInteger, SPHotkeyState) {
 // short-lived or listen-only taps.
 @property (nonatomic, assign) BOOL tapWantsActive;
 @property (nonatomic, assign, readwrite) BOOL canConsumeGlobalKeyEvents;
-@property (nonatomic, strong) NSMutableSet<NSNumber *> *suppressedNumberKeyCodes;
+// Key codes whose keyUp must also be swallowed after a handled keyDown
+// (template number shortcuts and the raw-ASR-accept Return key).
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *suppressedKeyCodes;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *suppressedHotkeyKeyCodes;
 @property (nonatomic, strong) dispatch_block_t pendingModifierReleaseBlock;
 
@@ -61,7 +63,8 @@ typedef NS_ENUM(NSInteger, SPHotkeyState) {
 - (BOOL)isRecordingState;
 - (BOOL)hasUnconfirmedPreCapture;
 - (BOOL)handleNumberKeyWithKeyCode:(NSInteger)keyCode;
-- (BOOL)consumeSuppressedNumberKeyForKeyCode:(NSInteger)keyCode isKeyUp:(BOOL)isKeyUp;
+- (BOOL)handleEnterKeyWithKeyCode:(NSInteger)keyCode;
+- (BOOL)consumeSuppressedKeyForKeyCode:(NSInteger)keyCode isKeyUp:(BOOL)isKeyUp;
 - (BOOL)isSuppressedHotkeyKeyCode:(NSNumber *)keyCodeNumber;
 - (void)addSuppressedHotkeyKeyCode:(NSNumber *)keyCodeNumber;
 - (BOOL)removeSuppressedHotkeyKeyCodeIfPresent:(NSNumber *)keyCodeNumber;
@@ -93,6 +96,10 @@ static NSInteger numberForKeyCode(NSInteger keyCode) {
         case 25: return 9;
         default: return 0;
     }
+}
+
+static BOOL isReturnKeyCode(NSInteger keyCode) {
+    return keyCode == 36 || keyCode == 76; // Return or keypad Enter
 }
 
 // Run a block on the main thread in kCFRunLoopCommonModes. Unlike
@@ -146,7 +153,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         BOOL isRepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0;
         BOOL suppressedTriggerKey = [monitor isSuppressedHotkeyKeyCode:keyCodeNumber];
 
-        if ([monitor consumeSuppressedNumberKeyForKeyCode:keyCode isKeyUp:(type == kCGEventKeyUp)]) {
+        if ([monitor consumeSuppressedKeyForKeyCode:keyCode isKeyUp:(type == kCGEventKeyUp)]) {
             return monitor.canConsumeGlobalKeyEvents ? NULL : event;
         }
 
@@ -166,6 +173,13 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         // When handled, suppress both keyDown and keyUp so the typed digit
         // does not leak into the user's target app.
         if (type == kCGEventKeyDown && [monitor handleNumberKeyWithKeyCode:keyCode]) {
+            return monitor.canConsumeGlobalKeyEvents ? NULL : event;
+        }
+
+        // Forward Return/Enter to accept the raw ASR result mid-correction.
+        // When handled, suppress both keyDown and keyUp so the newline does
+        // not leak into the user's target app.
+        if (type == kCGEventKeyDown && [monitor handleEnterKeyWithKeyCode:keyCode]) {
             return monitor.canConsumeGlobalKeyEvents ? NULL : event;
         }
 
@@ -238,7 +252,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         _targetModifierFlag = 0x00800000; // NX_SECONDARYFNMASK
         _targetMatchKind = SPHotkeyMatchKindModifierOnly;
         _canConsumeGlobalKeyEvents = NO;
-        _suppressedNumberKeyCodes = [NSMutableSet set];
+        _suppressedKeyCodes = [NSMutableSet set];
         _suppressedHotkeyKeyCodes = [NSMutableSet set];
     }
     return self;
@@ -277,10 +291,13 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
 
 - (BOOL)needsEventConsumption {
     // Modifier-only triggers (Fn, Option, …) never consume the trigger
-    // events; only the template selector's number shortcuts need swallowing.
+    // events; only the template selector's number shortcuts and the raw-ASR
+    // fallback's Enter accept need swallowing.
     // Non-modifier triggers consume their keyDown/keyUp so the trigger key
     // does not leak into the focused app.
-    return ![self isModifierOnlyMatchKind:self.targetMatchKind] || self.numberKeyHandler != nil;
+    return ![self isModifierOnlyMatchKind:self.targetMatchKind] ||
+           self.numberKeyHandler != nil ||
+           self.enterKeyHandler != nil;
 }
 
 - (void)startTapThread {
@@ -509,20 +526,75 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
 
     if (handled) {
         @synchronized (self) {
-            [self.suppressedNumberKeyCodes addObject:@(keyCode)];
+            [self.suppressedKeyCodes addObject:@(keyCode)];
         }
     }
     return handled;
 }
 
-- (BOOL)consumeSuppressedNumberKeyForKeyCode:(NSInteger)keyCode isKeyUp:(BOOL)isKeyUp {
+@synthesize enterKeyHandler = _enterKeyHandler;
+
+- (BOOL (^)(void))enterKeyHandler {
+    @synchronized (self) {
+        return _enterKeyHandler;
+    }
+}
+
+- (void)setEnterKeyHandler:(BOOL (^)(void))handler {
+    BOOL hadHandler;
+    BOOL hasHandler;
+    @synchronized (self) {
+        hadHandler = (_enterKeyHandler != nil);
+        _enterKeyHandler = [handler copy];
+        hasHandler = (_enterKeyHandler != nil);
+    }
+    // Like number-key capture, the Enter accept needs an ACTIVE tap on
+    // modifier-only triggers. Upgrade while the raw-ASR fallback is armed;
+    // downgrade back to listen-only as soon as it goes away.
+    if (hadHandler != hasHandler) {
+        [self updateTapModeIfNeeded];
+    }
+}
+
+- (BOOL)handleEnterKeyWithKeyCode:(NSInteger)keyCode {
+    if (!isReturnKeyCode(keyCode)) return NO;
+    if (!self.enterKeyHandler) return NO;
+
+    // Same main-thread contract and timeout rationale as
+    // handleNumberKeyWithKeyCode above.
+    BOOL (^handler)(void) = self.enterKeyHandler;
+    __block BOOL handled = NO;
+    if ([NSThread isMainThread]) {
+        handled = handler();
+    } else {
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        __block BOOL mainResult = NO;
+        SPPerformOnMainRunLoop(^{
+            mainResult = handler();
+            dispatch_semaphore_signal(done);
+        });
+        if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW,
+                                                        (int64_t)(100 * NSEC_PER_MSEC))) == 0) {
+            handled = mainResult;
+        }
+    }
+
+    if (handled) {
+        @synchronized (self) {
+            [self.suppressedKeyCodes addObject:@(keyCode)];
+        }
+    }
+    return handled;
+}
+
+- (BOOL)consumeSuppressedKeyForKeyCode:(NSInteger)keyCode isKeyUp:(BOOL)isKeyUp {
     NSNumber *keyCodeNumber = @(keyCode);
     @synchronized (self) {
-        if (![self.suppressedNumberKeyCodes containsObject:keyCodeNumber]) {
+        if (![self.suppressedKeyCodes containsObject:keyCodeNumber]) {
             return NO;
         }
         if (isKeyUp) {
-            [self.suppressedNumberKeyCodes removeObject:keyCodeNumber];
+            [self.suppressedKeyCodes removeObject:keyCodeNumber];
         }
     }
     return YES;
@@ -597,7 +669,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
         if (event.type == NSEventTypeKeyDown && ![self isTargetKeyCode:keyCode]) {
             [self cancelDoubleTapCandidateForInterveningInput];
         }
-        if ([self consumeSuppressedNumberKeyForKeyCode:keyCode isKeyUp:(event.type == NSEventTypeKeyUp)]) {
+        if ([self consumeSuppressedKeyForKeyCode:keyCode isKeyUp:(event.type == NSEventTypeKeyUp)]) {
             return YES;
         }
         if ([event isARepeat]) return NO;
@@ -663,7 +735,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
     self.state = SPHotkeyStateIdle;
     self.canConsumeGlobalKeyEvents = NO;
     @synchronized (self) {
-        [self.suppressedNumberKeyCodes removeAllObjects];
+        [self.suppressedKeyCodes removeAllObjects];
         [self.suppressedHotkeyKeyCodes removeAllObjects];
     }
     if (hadPendingTrigger) {
@@ -930,7 +1002,7 @@ static CGEventRef hotkeyEventCallback(CGEventTapProxy proxy,
     self.triggerDown = NO;
     self.state = SPHotkeyStateIdle;
     @synchronized (self) {
-        [self.suppressedNumberKeyCodes removeAllObjects];
+        [self.suppressedKeyCodes removeAllObjects];
         [self.suppressedHotkeyKeyCodes removeAllObjects];
     }
     if (hadPendingTrigger) {

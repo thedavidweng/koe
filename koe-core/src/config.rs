@@ -325,6 +325,8 @@ pub struct LlmSection {
     pub enabled: bool,
     #[serde(default = "default_false")]
     pub prompt_templates_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_paste_processed_text: bool,
     /// Active LLM profile id.
     #[serde(default = "default_llm_active_profile")]
     pub active_profile: String,
@@ -2052,6 +2054,7 @@ asr:
 llm:
   enabled: true        # set to false to skip LLM correction entirely
   prompt_templates_enabled: false  # show rewrite template buttons above the overlay after transcription
+  auto_paste_processed_text: true  # paste the first LLM-processed result into the active input immediately
   active_profile: "openai"
   temperature: 0
   top_p: 1
@@ -2262,6 +2265,7 @@ mod tests {
     fn config_default_includes_single_translation_template() {
         let config = Config::default();
         assert_eq!(config.prompt_templates, default_prompt_templates());
+        assert!(config.llm.auto_paste_processed_text);
         assert_eq!(config.overlay.font_family, "system");
         assert_eq!(config.overlay.font_size, 13);
         assert_eq!(config.overlay.bottom_margin, 10);

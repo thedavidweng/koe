@@ -719,6 +719,7 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
 
 // LLM fields
 @property(nonatomic, strong) NSSwitch *llmEnabledCheckbox;
+@property(nonatomic, strong) NSSwitch *llmAutoPasteProcessedTextSwitch;
 @property(nonatomic, strong) NSTableView *llmProfileTableView;
 @property(nonatomic, strong) NSScrollView *llmProfileTableScroll;
 @property(nonatomic, strong) NSButton *llmAddProfileButton;
@@ -1521,7 +1522,7 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
   CGFloat paneWidth = 600;
   CGFloat contentX = 24.0;
   CGFloat contentW = paneWidth - 48.0;
-  CGFloat contentHeight = 580;
+  CGFloat contentHeight = 632;
 
   // Sidebar (profile list) geometry
   CGFloat sidebarX = 24.0;
@@ -1564,6 +1565,14 @@ static void ensureCustomHotkeyInPopup(NSPopUpButton *popup, NSString *value) {
                            toggle:self.llmEnabledCheckbox];
   [pane addSubview:llmEnabledCard];
   y = NSMinY(llmEnabledCard.frame) - 24.0;
+
+  self.llmAutoPasteProcessedTextSwitch = [self settingsSwitchWithAction:NULL];
+  NSView *autoPasteCard =
+      [self settingsToggleCardWithFrame:NSMakeRect(contentX, y - 48.0, contentW, 48.0)
+                                  title:@"Auto-paste processed text"
+                                 toggle:self.llmAutoPasteProcessedTextSwitch];
+  [pane addSubview:autoPasteCard];
+  y = NSMinY(autoPasteCard.frame) - 24.0;
 
   NSTextField *sectionTitle = [self
       sectionTitleLabel:@"Profiles"
@@ -5343,6 +5352,14 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType,
         enabled ? NSControlStateValueOn : NSControlStateValueOff;
     [self rememberLoadedBooleanValue:enabled forKey:@"llm.enabled"];
 
+    // auto_paste_processed_text defaults to true when unset.
+    NSString *autoPaste = configGet(@"llm.auto_paste_processed_text");
+    BOOL autoPasteEnabled = ![autoPaste isEqualToString:@"false"];
+    self.llmAutoPasteProcessedTextSwitch.state =
+        autoPasteEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+    [self rememberLoadedBooleanValue:autoPasteEnabled
+                              forKey:@"llm.auto_paste_processed_text"];
+
     [self loadLlmProfilesFromCore];
     self.llmTestResultLabel.stringValue = @"";
     [self updateLlmFieldsEnabled];
@@ -5669,6 +5686,13 @@ static void appleSpeechInstallCallback(void *ctx, int32_t eventType,
                   self.llmEnabledCheckbox.state == NSControlStateValueOn
                                 forKey:@"llm.enabled"]) {
       saveOk &= configSet(@"llm.enabled", enabledStr);
+    }
+    BOOL autoPasteProcessedText =
+        self.llmAutoPasteProcessedTextSwitch.state == NSControlStateValueOn;
+    if ([self shouldPersistBooleanValue:autoPasteProcessedText
+                                 forKey:@"llm.auto_paste_processed_text"]) {
+      saveOk &= configSet(@"llm.auto_paste_processed_text",
+                          autoPasteProcessedText ? @"true" : @"false");
     }
 
     [self syncActiveLlmProfileFromFields];
